@@ -87,7 +87,7 @@ internal static class SolverController
             ? previous.Select(step => step.Action).ToArray() : null;
         if (incumbent == null) { Plan = null; Step = 0; }
         _worker ??= new WorkerClient(OS.GetExecutablePath(), Path.GetDirectoryName(typeof(Entry).Assembly.Location)!,
-            ProjectSettings.GlobalizePath("user://cvpp-workers"));
+            ProjectSettings.GlobalizePath("user://cvpp-workers"), WorkerEnvironment.Capture());
         var result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds), incumbent), progress =>
         {
             Progress = progress;
@@ -180,10 +180,12 @@ internal static class SolverController
 
     internal static bool Input(InputEvent input)
     {
+        SolverHud.Pointer(input);
         if (input is InputEventKey { Pressed: true, Echo: false } key)
         {
             if (key.Keycode == Key.F10) { SolverHud.Toggle(); return true; }
             if (key.Keycode == Key.Escape && Busy) { Stop(); return true; }
+            if (key.Keycode == Key.Escape && SolverHud.Close()) return true;
         }
         return Executing && input is InputEventKey or InputEventJoypadButton or InputEventJoypadMotion;
     }

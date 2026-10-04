@@ -107,7 +107,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             _selector = null;
             CombatManager.Instance.CombatWon -= Won;
             if (Manager.IsInProgress) Manager.ActionExecutor.AfterActionExecuted -= AfterAction;
-            if (!_live) Manager.CleanUp();
+            if (!_live && Manager.IsInProgress) Manager.CleanUp();
             _failure = null;
             Victory = false;
         }
@@ -237,6 +237,9 @@ internal sealed class NativeCombat : IAsyncDisposable
         var (card, target) = Resolve(run, token);
         return target == null ? card.Id.Entry : $"{card.Id.Entry}:{target.ModelId.Entry}";
     }
+
+    internal string? Portrait(RunState run, uint token) => token != EndTurn && (token & 0xc0000000) == 0
+        ? Resolve(run, token).Card.PortraitPath : null;
 
     internal string Label(RunState run, uint token)
     {

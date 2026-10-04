@@ -1,6 +1,6 @@
 namespace cvpp;
 
-internal sealed record PlanStep(uint Action, string Label, string Kind, int Turn, string Before, string After);
+internal sealed record PlanStep(uint Action, string Label, string Kind, int Turn, string Before, string After, string? Portrait = null);
 internal sealed record CombatPlan(PlanStep[] Steps, int FinalHp, int Turns);
 internal sealed record SolveProgress(uint Simulations, uint Nodes, int? BestHp, double ElapsedMs);
 internal sealed record SolveResult(CombatPlan? Plan, PlannerStats Stats, double ElapsedMs, string StopReason, uint Restores, uint Actions);

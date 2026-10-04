@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace cvpp;
 
-internal sealed class WorkerClient(string executable, string package, string cache) : IAsyncDisposable
+internal sealed class WorkerClient(string executable, string package, string cache, WorkerSetup setup) : IAsyncDisposable
 {
     private Process? _process;
     private NamedPipeServerStream? _pipe;
@@ -40,13 +40,27 @@ internal sealed class WorkerClient(string executable, string package, string cac
             string mod = Path.Combine(game, "mods", "cvpp");
             Directory.CreateDirectory(mod);
             foreach (string file in Directory.EnumerateFiles(package)) File.Copy(file, Path.Combine(mod, Path.GetFileName(file)));
+            for (int index = 0; index < setup.Mods.Length; index++)
+            {
+                var source = setup.Mods[index];
+                if (source.Id == "cvpp") continue;
+                string destination = Path.Combine(game, "mods", "environment", index.ToString("D3"));
+                foreach (string file in Directory.EnumerateFiles(source.Path, "*", SearchOption.AllDirectories))
+                {
+                    token.ThrowIfCancellationRequested();
+                    string target = Path.Combine(destination, Path.GetRelativePath(source.Path, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    if (Path.GetExtension(file).Equals(".pck", StringComparison.OrdinalIgnoreCase)) File.CreateSymbolicLink(target, file);
+                    else File.Copy(file, target);
+                }
+            }
             string profile = Path.Combine(userdata, "SlayTheSpire2");
             string settings = Path.Combine(profile, "default", "1", "settings.save");
             Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
             File.WriteAllText(settings, JsonSerializer.Serialize(new
             {
                 schema_version = 8,
-                mod_settings = new { mods_enabled = true, mod_list = Array.Empty<object>() },
+                mod_settings = new { mods_enabled = true, mod_list = setup.Mods.Select(mod => new { id = mod.Id, is_enabled = true, source = "mods_directory" }).ToArray() },
                 volume_master = 0,
                 skip_intro_logo = true,
                 seen_ea_disclaimer = true,
@@ -92,6 +106,8 @@ internal sealed class WorkerClient(string executable, string package, string cac
         await connected;
         var ready = await Wire.Read(_pipe, startup.Token);
         if (ready.Kind != "ready") throw new InvalidDataException("The solver worker did not become ready.");
+        if (ready.Compatibility != setup.Compatibility)
+            throw new NotSupportedException("The worker's loaded mods or serialization schema differ from the game. Restart after updating mods.");
     }
 
     internal async Task<SolveResult> Solve(SolveRequest request, Action<SolveProgress>? progress, CancellationToken token)

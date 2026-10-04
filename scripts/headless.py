@@ -16,9 +16,15 @@ def main():
     parser.add_argument("data", type=Path)
     parser.add_argument("--benchmark", action="store_true")
     parser.add_argument("--ui", action="store_true")
+    parser.add_argument("--mod", type=Path, action="append", default=[])
+    parser.add_argument("--replay", type=Path)
+    parser.add_argument("--save", type=Path)
+    parser.add_argument("--product-only", action="store_true")
     args = parser.parse_args()
     source, data = args.source.resolve(), args.data.resolve()
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
+    if args.mod:
+        name += "-modded"
     package = ROOT / "artifacts/integration/dist/cvpp"
     results = ROOT / "artifacts/validation"
     instances = ROOT / "artifacts/workers"
@@ -39,6 +45,17 @@ def main():
                 target.symlink_to(item)
         (game / data.name).symlink_to(data, target_is_directory=True)
         shutil.copytree(package, game / "mods/cvpp")
+        mod_list = []
+        for index, source_mod in enumerate(args.mod):
+            target_mod = game / "mods/environment" / str(index)
+            shutil.copytree(source_mod, target_mod, symlinks=True)
+            manifests = list(target_mod.glob("*.json"))
+            for manifest in manifests:
+                metadata = json.loads(manifest.read_text(encoding="utf-8-sig"))
+                if "id" in metadata:
+                    mod_list.append(
+                        {"id": metadata["id"], "is_enabled": True, "source": "mods_directory"}
+                    )
         userdata = directory / "userdata"
         profile = userdata / "SlayTheSpire2"
         settings = profile / "default/1/settings.save"
@@ -47,7 +64,7 @@ def main():
             json.dumps(
                 {
                     "schema_version": 8,
-                    "mod_settings": {"mods_enabled": True, "mod_list": []},
+                    "mod_settings": {"mods_enabled": True, "mod_list": mod_list},
                     "volume_master": 0,
                     "skip_intro_logo": True,
                     "seen_ea_disclaimer": True,
@@ -58,6 +75,10 @@ def main():
             )
         )
         (profile / ".cvpp-test-sandbox").touch()
+        if args.replay:
+            shutil.copy2(args.replay, profile / "cvpp-fixture.mcr")
+        if args.save:
+            shutil.copy2(args.save, profile / "cvpp-fixture.save")
         command = [
             str(game / "SlayTheSpire2"),
             "--headless",
@@ -68,6 +89,8 @@ def main():
         ]
         if args.benchmark:
             command.append("--cvpp-benchmark")
+        if args.product_only:
+            command.append("--cvpp-product-only")
         if args.ui:
             command.remove("--headless")
             command.extend(
@@ -102,8 +125,8 @@ def main():
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait(timeout=5)
         report_path = profile / "cvpp-selftest.json"
-        if (profile / "cvpp-ui.png").is_file():
-            shutil.copy2(profile / "cvpp-ui.png", results / "ui.png")
+        for screenshot in profile.glob("cvpp-ui-*.png"):
+            shutil.copy2(screenshot, results / screenshot.name.removeprefix("cvpp-"))
         for log_path in profile.glob("cvpp-workers/last-*.log"):
             shutil.copy2(log_path, results / log_path.name)
         if not report_path.is_file():

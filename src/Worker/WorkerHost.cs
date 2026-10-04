@@ -19,6 +19,7 @@ internal static class WorkerHost
         if (DisplayServer.GetName() != "headless" || !File.Exists(ProjectSettings.GlobalizePath("user://.cvpp-test-sandbox")))
             throw new InvalidOperationException("The solver worker requires an isolated headless profile.");
         new Harmony("clarelab.cvpp.assets").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
+        new Harmony("clarelab.cvpp.presentation").CreateClassProcessor(typeof(HeadlessPresentation)).Patch();
         _ = Run();
     }
 
@@ -38,7 +39,7 @@ internal static class WorkerHost
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
             Engine.MaxFps = 10;
-            await Wire.Write(pipe, new WorkerMessage("ready"));
+            await Wire.Write(pipe, new WorkerMessage("ready", Compatibility: WorkerEnvironment.Capture().Compatibility));
             var incoming = Channel.CreateBounded<WorkerMessage>(1);
             var outgoing = Channel.CreateBounded<WorkerMessage>(new BoundedChannelOptions(16)
             { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });

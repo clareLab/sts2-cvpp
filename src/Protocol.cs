@@ -6,8 +6,10 @@ namespace cvpp;
 
 internal sealed partial record CombatPosition(byte[] Root, byte[] History, string State);
 internal sealed record SolveRequest(CombatPosition Position, SolveOptions Options, uint[]? Incumbent = null);
+internal sealed record WorkerMod(string Id, string Path);
+internal sealed record WorkerSetup(WorkerMod[] Mods, string Compatibility);
 internal sealed record WorkerMessage(string Kind, string Id = "", SolveRequest? Request = null,
-    SolveProgress? Progress = null, SolveResult? Result = null, string? Error = null, uint Abi = NativeCore.ExpectedAbi);
+    SolveProgress? Progress = null, SolveResult? Result = null, string? Error = null, uint Abi = NativeCore.ExpectedAbi, string? Compatibility = null);
 
 internal static class Wire
 {

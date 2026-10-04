@@ -9,6 +9,8 @@ using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Multiplayer.Replay;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -29,6 +31,7 @@ internal static class SelfTests
             || !File.Exists(ProjectSettings.GlobalizePath("user://.cvpp-test-sandbox")))
             throw new InvalidOperationException("An isolated headless test sandbox is required.");
         new Harmony("clarelab.cvpp.selftest").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
+        new Harmony("clarelab.cvpp.selftest.presentation").CreateClassProcessor(typeof(HeadlessPresentation)).Patch();
         _ = Run();
     }
 
@@ -50,7 +53,22 @@ internal static class SelfTests
             Check(NativeCore.Initialize() == NativeCore.ExpectedAbi, "Rust loaded inside Godot");
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
-            if (!OS.GetCmdlineArgs().Contains("--cvpp-ui"))
+            string fixture = ProjectSettings.GlobalizePath("user://cvpp-fixture.mcr");
+            if (File.Exists(fixture))
+            {
+                var reader = new PacketReader();
+                reader.Reset(File.ReadAllBytes(fixture));
+                var replay = reader.Read<CombatReplay>();
+                string save = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
+                if (File.Exists(save)) replay.serializableRun = JsonSerializer.Deserialize(File.ReadAllText(save), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
+                replay.events.Clear();
+                replay.checksumData.Clear();
+                var checkpoint = new CombatCheckpoint(replay);
+                await using var combat = new NativeCombat { Mode = CombatExecution.Worker };
+                var result = await HealthSearch.Run(combat, () => combat.Restore(checkpoint), new SolveOptions(5));
+                Check(result.Plan != null, "external replay decodes and produces a verified winning route");
+            }
+            if (!OS.GetCmdlineArgs().Contains("--cvpp-ui") && !OS.GetCmdlineArgs().Contains("--cvpp-product-only"))
             {
                 if (OS.GetCmdlineArgs().Contains("--cvpp-benchmark"))
                 {

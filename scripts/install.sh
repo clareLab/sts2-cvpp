@@ -20,4 +20,4 @@ fi
 mkdir -p "$destination"
 cp artifacts/dist/cvpp/cvpp.dll artifacts/dist/cvpp/cvpp.json artifacts/dist/cvpp/libcvpp_core.so artifacts/dist/cvpp/LICENSE "$destination/"
 echo "Installed: $destination"
-echo 'Enable Combat Solver ++ in the game Mod menu. F10 folds the panel; Esc stops the solver.'
+echo 'Enable Combat Solver ++ in the game Mod menu. F10 opens the route; Esc stops the solver.'

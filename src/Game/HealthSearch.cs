@@ -75,10 +75,11 @@ internal static class HealthSearch
             {
                 string before = combat.Fingerprint(run);
                 string label = combat.Label(run, token);
+                string? portrait = combat.Portrait(run, token);
                 string kind = token == NativeCombat.EndTurn ? "turn" : (token & 0xc0000000) == NativeCombat.Selection ? "choice" : "card";
                 int turn = run.Players.Single().PlayerCombatState?.TurnNumber ?? initialTurn;
                 await combat.Execute(run, token);
-                route.Add(new PlanStep(token, label, kind, turn, before, combat.Fingerprint(run)));
+                route.Add(new PlanStep(token, label, kind, turn, before, combat.Fingerprint(run), portrait));
             }
             if (!combat.Finished || !combat.Victory || run.Players.Single().Creature.CurrentHp != bestHp)
                 throw new InvalidOperationException("The winning route did not reproduce.");

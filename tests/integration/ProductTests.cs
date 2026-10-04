@@ -26,6 +26,7 @@ internal static class ProductTests
             .OrderBy(p => p.coord.row).ThenBy(p => p.coord.col).First();
         await RunManager.Instance.EnterMapCoord(point.coord);
         await Until(() => NativeCombat.IsStable(run), "product combat");
+        if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) RenderingServer.RenderLoopEnabled = false;
         string before = CombatFingerprint.Capture(run);
         SolverController.Seconds = 5;
         var timing = Stopwatch.StartNew();
@@ -37,10 +38,15 @@ internal static class ProductTests
         SolverHud.Tick();
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
         {
-            await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
-            await Tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-            using var image = Tree.Root.GetTexture().GetImage();
-            image.SavePng(ProjectSettings.GlobalizePath("user://cvpp-ui.png"));
+            await Screenshot("toolbar");
+            Click("CvppRouteToggle");
+            await Screenshot("route");
+            Click("CvppSettings");
+            Click("CvppBudget30");
+            if (SolverController.Seconds != 30 || Tree.Root.FindChild("CvppRoute", true, false) is not Control { Visible: false })
+                throw new InvalidOperationException("Settings flyout interaction failed.");
+            await Screenshot("settings");
+            SolverHud.Close();
             RenderingServer.RenderLoopEnabled = false;
         }
         SolverController.Play(ExecutionRange.Step);
@@ -81,5 +87,19 @@ internal static class ProductTests
             if (timer.Elapsed.TotalSeconds > seconds) throw new TimeoutException(stage);
             await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
         } while (!ready());
+    }
+
+    private static void Click(string name) => (Tree.Root.FindChild(name, true, false) as Button
+        ?? throw new InvalidOperationException("Missing control: " + name)).EmitSignal(BaseButton.SignalName.Pressed);
+
+    private static async Task Screenshot(string name)
+    {
+        SolverHud.Tick();
+        for (int frame = 0; frame < 3; frame++) await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
+        RenderingServer.RenderLoopEnabled = true;
+        await Tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        using var image = Tree.Root.GetTexture().GetImage();
+        image.SavePng(ProjectSettings.GlobalizePath("user://cvpp-ui-" + name + ".png"));
+        RenderingServer.RenderLoopEnabled = false;
     }
 }
