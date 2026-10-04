@@ -1,8 +1,10 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace cvpp;
 
@@ -19,19 +21,24 @@ internal sealed class SnapshotLoop : IDisposable
     private RunState? _run;
     private object? _turn;
     private readonly SnapshotGraph _graph;
+    private readonly long _winTime;
     private bool _disposed;
 
     internal SnapshotGraph Graph => _graph;
 
-    internal SnapshotLoop(NativeCombat combat, RunState run)
+    internal SnapshotLoop(NativeCombat combat, RunState run, SnapshotLoop? parent = null)
     {
         if (combat.Mode != CombatExecution.Worker || !combat.Stable(run))
             throw new InvalidOperationException("Snapshot requires an idle worker decision.");
+        if (parent != null && (parent._disposed || !ReferenceEquals(parent._run, run)))
+            throw new InvalidOperationException("Shared snapshot requires its original live parent.");
         _run = run;
         _turn = Turn.GetValue(CombatManager.Instance)!;
         var manager = RunManager.Instance;
-        _graph = new SnapshotGraph(run, CombatManager.Instance, manager.ActionQueueSet,
-            manager.ActionQueueSynchronizer, manager.PlayerChoiceSynchronizer, manager.ActionExecutor, NetCombatCardDb.Instance);
+        _winTime = manager.WinTime;
+        _graph = new SnapshotGraph(parent?._graph, run, CombatManager.Instance, manager.ActionQueueSet,
+            manager.ActionQueueSynchronizer, manager.PlayerChoiceSynchronizer, manager.ActionExecutor, NetCombatCardDb.Instance,
+            SaveManager.Instance.Progress);
         if (_graph.Runs.Length != 1)
         {
             _graph.Dispose();
@@ -43,8 +50,17 @@ internal sealed class SnapshotLoop : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_run == null || _turn == null || combat.Mode != CombatExecution.Worker || !ReferenceEquals(_run, RunManager.Instance.DebugOnlyGetState())
-            || !combat.Stable(_run) || !ReferenceEquals(_turn, Turn.GetValue(CombatManager.Instance)))
+            || (!combat.Stable(_run) && !combat.Finished && !(combat.HasChoice && !RunManager.Instance.ActionExecutor.IsRunning))
+            || !ReferenceEquals(_turn, Turn.GetValue(CombatManager.Instance)) || Failure(combat) != null)
             throw new InvalidOperationException("Snapshot restore requires its original idle worker combat.");
+        int choices = 0;
+        while (combat.HasChoice)
+        {
+            if (++choices > 64) throw new NotSupportedException("Abandoned choice chain exceeds the snapshot limit.");
+            Choices(combat).FinishAbandoned();
+            await combat.Until(() => combat.HasChoice && !RunManager.Instance.ActionExecutor.IsRunning
+                || combat.Finished || combat.Stable(_run), "snapshot abandoned choice");
+        }
         var previous = (Task)Loop.GetValue(CombatManager.Instance)!;
         var cancellation = (CancellationTokenSource)Cancellation.GetValue(_turn)!;
         Cancel.Invoke(_turn, null);
@@ -52,6 +68,8 @@ internal sealed class SnapshotLoop : IDisposable
         if (previous.IsFaulted) throw new InvalidOperationException("Previous turn loop failed.", previous.Exception);
         cancellation.Dispose();
         _graph.Restore();
+        Victory(combat) = false;
+        RunManager.Instance.WinTime = _winTime;
         Cancellation.SetValue(_turn, new CancellationTokenSource());
         foreach (string name in new[] { "EndTurnSignalSource", "BeginEnemyTurnSignalSource" })
         {
@@ -61,6 +79,15 @@ internal sealed class SnapshotLoop : IDisposable
         Loop.SetValue(CombatManager.Instance, Resume(_turn));
         if (!combat.Stable(_run)) throw new InvalidOperationException("Restored combat is not ready.");
     }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_choices")]
+    private static extern ref CombatChoices Choices(NativeCombat combat);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_failure")]
+    private static extern ref Exception? Failure(NativeCombat combat);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Victory>k__BackingField")]
+    private static extern ref bool Victory(NativeCombat combat);
 
     private static async Task Resume(object turn)
     {

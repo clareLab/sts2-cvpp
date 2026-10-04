@@ -45,13 +45,14 @@ internal sealed class SnapshotGraph : IDisposable
     internal int Objects => _entries.Count;
     internal int References => _references.Count;
     internal int Bytes => _buffer.Length * sizeof(ulong);
+    internal ulong SharedBytes => SnapshotNative.SharedBytes(_native);
     internal string[] Boundaries => _boundaries.Order().ToArray();
     internal static string[] RuntimeBoundaries => RuntimeFields.Order().ToArray();
     internal object[] Types => _entries.GroupBy(entry => entry.Target.GetType().FullName)
         .OrderByDescending(group => group.Count()).Take(20).Select(group => (object)new { type = group.Key, count = group.Count() }).ToArray();
     internal string[] Runs => _entries.Where(entry => entry.Target is RunState).Select(entry => Origin(entry.Target)).ToArray();
 
-    internal SnapshotGraph(params object[] roots)
+    internal SnapshotGraph(SnapshotGraph? parent, params object[] roots)
     {
         foreach (object root in roots) Reference(root);
         for (int index = 0; index < _pending.Count; index++)
@@ -82,7 +83,7 @@ internal sealed class SnapshotGraph : IDisposable
             _entries.Add(new Entry(target, start, _words.Count - start, decoder));
         }
         _buffer = new ulong[_words.Count];
-        _native = SnapshotNative.Capture(CollectionsMarshal.AsSpan(_words));
+        _native = SnapshotNative.Capture(CollectionsMarshal.AsSpan(_words), parent?._native);
         _referenceTable = _references.ToArray();
         _words.Clear();
         _words.TrimExcess();

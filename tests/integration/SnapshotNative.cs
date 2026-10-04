@@ -8,11 +8,12 @@ internal sealed partial class SnapshotNative : SafeHandleZeroOrMinusOneIsInvalid
 {
     private SnapshotNative(nint value) : base(true) => SetHandle(value);
 
-    internal static unsafe SnapshotNative Capture(ReadOnlySpan<ulong> words)
+    internal static unsafe SnapshotNative Capture(ReadOnlySpan<ulong> words, SnapshotNative? parent = null)
     {
         fixed (ulong* data = words)
         {
-            nint value = CaptureWords(data, checked((uint)words.Length), 8 * 1024 * 1024);
+            nint value = parent == null ? CaptureWords(data, checked((uint)words.Length), 8 * 1024 * 1024)
+                : CaptureFrom(parent, data, checked((uint)words.Length), 8 * 1024 * 1024);
             if (value == 0) throw new InvalidOperationException("Snapshot allocation rejected.");
             return new SnapshotNative(value);
         }
@@ -34,6 +35,14 @@ internal sealed partial class SnapshotNative : SafeHandleZeroOrMinusOneIsInvalid
     [LibraryImport("cvpp_snapshot_probe", EntryPoint = "cvpp_snapshot_capture")]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe partial nint CaptureWords(ulong* source, uint count, uint budget);
+
+    [LibraryImport("cvpp_snapshot_probe", EntryPoint = "cvpp_snapshot_capture_from")]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe partial nint CaptureFrom(SnapshotNative parent, ulong* source, uint count, uint budget);
+
+    [LibraryImport("cvpp_snapshot_probe", EntryPoint = "cvpp_snapshot_shared_bytes")]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial ulong SharedBytes(SnapshotNative snapshot);
 
     [LibraryImport("cvpp_snapshot_probe", EntryPoint = "cvpp_snapshot_restore")]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]

@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Nodes;
@@ -100,6 +102,9 @@ internal static class SnapshotProbe
             "explicit release clears native bytes and managed roots");
         object paired = await Benchmark(combat, checkpoint);
         object guards = await Guards(combat, checkpoint);
+        object terminal = await Terminal(combat, checkpoint);
+        await combat.Restore(checkpoint);
+        await ((SceneTree)Engine.GetMainLoop()).ToSignal((SceneTree)Engine.GetMainLoop(), SceneTree.SignalName.ProcessFrame);
         object registry = await RegistryRegressions.Run(combat, checkpoint);
         object corpus = await Corpus(combat);
         var report = new
@@ -115,11 +120,12 @@ internal static class SnapshotProbe
             independently_verified = true,
             paired,
             guards,
+            terminal,
             registry,
             corpus,
             game_mvid = typeof(RunState).Assembly.ManifestModule.ModuleVersionId,
             checkpoint = checkpoint.Digest,
-            scope = "isolated vanilla stable nonterminal player decisions; prototype only"
+            scope = "isolated vanilla stable snapshots with terminal rollback and choice replay; prototype only"
         };
         return report;
     }
@@ -239,7 +245,11 @@ internal static class SnapshotProbe
         using var root = new SnapshotLoop(combat, run);
         string initial = combat.Fingerprint(run);
         await Step(combat, run, "BLADE_DANCE");
-        using var generated = new SnapshotLoop(combat, run);
+        using var generated = new SnapshotLoop(combat, run, root);
+        ulong sharedBytes = generated.Graph.SharedBytes;
+        ulong liveBytes = SnapshotNative.LiveBytes();
+        Require(sharedBytes > 0 && liveBytes == (ulong)(root.Graph.Bytes + generated.Graph.Bytes) - sharedBytes,
+            "native snapshots share unchanged pages");
         string generatedState = combat.Fingerprint(run);
         for (int index = 0; index < 8; index++)
         {
@@ -254,16 +264,23 @@ internal static class SnapshotProbe
         await root.Restore(combat);
         await Step(combat, run, "SURVIVOR");
         Reject(() => new SnapshotLoop(combat, run).Dispose());
-        await RejectAsync(() => root.Restore(combat));
+        await root.Restore(combat);
+        Require(!combat.HasChoice && combat.Fingerprint(run) == initial, "abandoned choice drains before snapshot restore");
+        await Step(combat, run, "SURVIVOR");
         await Step(combat, run, "SELECT:REFLEX");
         await root.Restore(combat);
         Require(combat.Fingerprint(run) == initial, "resolved choice restores its original decision");
         for (int turn = 0; turn < 64 && !combat.Finished; turn++)
             await combat.Execute(run, NativeCombat.EndTurn);
         Require(combat.Finished, "terminal guard fixture");
-        await RejectAsync(() => root.Restore(combat));
+        await root.Restore(combat);
+        Require(!combat.Finished && !combat.Victory && combat.Fingerprint(run) == initial, "terminal rollback resets outcome");
+        root.Dispose();
+        await generated.Restore(combat);
+        Require(combat.Fingerprint(run) == generatedState && SnapshotNative.LiveBytes() == (ulong)generated.Graph.Bytes,
+            "shared checkpoint survives parent disposal");
         run = await combat.Restore(checkpoint);
-        await RejectAsync(() => root.Restore(combat));
+        await RejectAsync(() => generated.Restore(combat));
         generated.Dispose();
         root.Dispose();
         await RejectAsync(() => root.Restore(combat));
@@ -276,17 +293,105 @@ internal static class SnapshotProbe
         return new
         {
             checkpoint_switches = 16,
-            pending_choice_rejected = true,
-            terminal_restore_rejected = true,
+            pending_choice_capture_rejected = true,
+            pending_choice_rollback = true,
+            terminal_rollback = true,
             stale_session_rejected = true,
             disposed_snapshot_rejected = true,
             native_bytes_after_dispose_and_gc = SnapshotNative.LiveBytes(),
-            managed_roots_released = true
+            managed_roots_released = true,
+            shared_bytes = sharedBytes,
+            combined_native_bytes = liveBytes
         };
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference Abandon(NativeCombat combat, RunState run) => new(new SnapshotLoop(combat, run));
+
+    private static async Task<object> Terminal(NativeCombat combat, CombatCheckpoint original)
+    {
+        var cases = new List<object>();
+        foreach (bool victory in new[] { false, true })
+        {
+            var replay = original.Read();
+            var player = replay.serializableRun.Players.Single();
+            player.Deck = victory ? Enumerable.Range(0, 5).Select(_ => Card<Bludgeon>(1)).ToList() : [Card<DefendSilent>()];
+            player.CurrentHp = victory ? 60 : 1;
+            player.MaxHp = 120;
+            player.Potions.Clear();
+            var checkpoint = new CombatCheckpoint(replay);
+            combat.Mode = CombatExecution.Worker;
+            var run = await combat.Restore(checkpoint);
+            string initial = combat.Fingerprint(run);
+            string progress = JsonSerializer.Serialize(SaveManager.Instance.Progress.ToSerializable());
+            long winTime = RunManager.Instance.WinTime;
+            var path = new List<uint>();
+            var expected = new List<string>();
+            var details = new List<string>();
+            string? ending = null;
+            using (var snapshot = new SnapshotLoop(combat, run))
+                for (int iteration = 0; iteration < 8; iteration++)
+                {
+                    await snapshot.Restore(combat);
+                    Require(!combat.Victory && combat.Fingerprint(run) == initial, "terminal checkpoint root");
+                    Require(JsonSerializer.Serialize(SaveManager.Instance.Progress.ToSerializable()) == progress
+                        && RunManager.Instance.WinTime == winTime, "terminal rollback restores progression and victory time");
+                    for (int step = 0; step < 24 && !combat.Finished; step++)
+                    {
+                        uint action = iteration > 0 ? path[step] : victory
+                            ? combat.Actions(run, includePotions: false).FirstOrDefault(token => token != NativeCombat.EndTurn, NativeCombat.EndTurn)
+                            : NativeCombat.EndTurn;
+                        await combat.Execute(run, action);
+                        string fingerprint = combat.Fingerprint(run);
+                        if (iteration == 0)
+                        {
+                            path.Add(action);
+                            expected.Add(fingerprint);
+                            details.Add(NetFullCombatState.FromRun(run, null).ToString());
+                        }
+                        else Require(expected[step] == fingerprint, "repeated terminal trajectory");
+                    }
+                    Require(combat.Finished && combat.Victory == victory, "terminal checkpoint result");
+                    ending ??= TerminalState(run);
+                }
+            run = await combat.Restore(checkpoint);
+            for (int step = 0; step < path.Count; step++)
+            {
+                await combat.Execute(run, path[step]);
+                Require(combat.Fingerprint(run) == expected[step], "terminal snapshot matches independent worker replay");
+            }
+            combat.Mode = CombatExecution.Reference;
+            run = await combat.Restore(checkpoint);
+            for (int step = 0; step < path.Count; step++)
+            {
+                await combat.Execute(run, path[step]);
+                Require(combat.Finished ? TerminalState(run) == ending : combat.Fingerprint(run) == expected[step],
+                    $"terminal reference {victory}/{step}\nExpected:\n{details[step]}\nActual:\n{NetFullCombatState.FromRun(run, null)}");
+            }
+            Require(combat.Finished && combat.Victory == victory, "terminal reference outcome");
+            cases.Add(new
+            {
+                victory,
+                restores = 8,
+                steps = path.Count,
+                hp = run.Players[0].Creature.CurrentHp,
+                full_worker_trace_matches = true,
+                normal_reference_terminal_exclusions = "reward-screen sequence IDs and post-combat reward/shop RNG"
+            });
+        }
+        combat.Mode = CombatExecution.Worker;
+        return cases;
+    }
+
+    private static string TerminalState(RunState run)
+    {
+        var state = NetFullCombatState.FromRun(run, null);
+        state.nextRewardIds.Clear();
+        var writer = new PacketWriter { WarnOnGrow = false };
+        writer.Write(state);
+        writer.ZeroByteRemainder();
+        return Convert.ToHexString(writer.Buffer.AsSpan(0, writer.BytePosition));
+    }
 
     private static async ValueTask Step(NativeCombat combat, RunState run, string step)
     {
