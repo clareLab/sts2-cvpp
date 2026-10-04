@@ -9,23 +9,31 @@ internal sealed class WorkerClient(string executable, string package, string cac
     private Process? _process;
     private NamedPipeServerStream? _pipe;
     private string? _directory;
+    private FileStream? _lease;
     private Task? _stdout;
     private Task? _stderr;
     private readonly SemaphoreSlim _write = new(1);
-    private int _busy;
+    private readonly SemaphoreSlim _operation = new(1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private Task? _dispose;
+    private volatile bool _disposed;
+    private volatile int _processId;
+    internal int? ProcessId { get { int id = _processId; return id == 0 ? null : id; } }
 
     private async Task Start(CancellationToken token)
     {
         if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("The solver worker currently requires Linux.");
         if (_process is { HasExited: false } && _pipe is { IsConnected: true }) return;
-        await Stop();
+        await Stop().ConfigureAwait(false);
         string name = "cvpp-" + Guid.NewGuid().ToString("N");
         _directory = Path.Combine(cache, name);
         string game = Path.Combine(_directory, "game");
         string userdata = Path.Combine(_directory, "userdata");
         await Task.Run(() =>
         {
+            Reap(cache);
             Directory.CreateDirectory(game);
+            _lease = new FileStream(Path.Combine(_directory, ".cvpp-worker"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
             string original = Path.GetDirectoryName(executable)!;
             foreach (string entry in Directory.EnumerateFileSystemEntries(original))
             {
@@ -69,17 +77,20 @@ internal sealed class WorkerClient(string executable, string package, string cac
                 language = "eng"
             }));
             File.WriteAllText(Path.Combine(profile, ".cvpp-test-sandbox"), "");
-        }, token);
+        }, token).ConfigureAwait(false);
         _pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        var start = new ProcessStartInfo(Path.Combine(game, Path.GetFileName(executable)))
+        var start = new ProcessStartInfo(Path.Combine(game, "mods", "cvpp", "cvpp-worker"))
         {
             WorkingDirectory = game,
             UseShellExecute = false,
             RedirectStandardOutput = true,
+            RedirectStandardInput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        start.ArgumentList.Add(_directory);
+        start.ArgumentList.Add(Path.Combine(game, Path.GetFileName(executable)));
         foreach (string argument in new[] { "--headless", "--audio-driver", "Dummy", "--force-steam=off", "--cvpp-worker" })
             start.ArgumentList.Add(argument);
         start.Environment["XDG_DATA_HOME"] = userdata;
@@ -88,7 +99,9 @@ internal sealed class WorkerClient(string executable, string package, string cac
         start.Environment["LP_NUM_THREADS"] = "1";
         start.Environment["DOTNET_PROCESSOR_COUNT"] = "2";
         start.Environment["CVPP_PIPE"] = name;
+        token.ThrowIfCancellationRequested();
         _process = Process.Start(start) ?? throw new IOException("Could not start the solver worker.");
+        _processId = _process.Id;
         var output = _process.StandardOutput;
         var errors = _process.StandardError;
         string directory = _directory;
@@ -98,65 +111,71 @@ internal sealed class WorkerClient(string executable, string package, string cac
         startup.CancelAfter(TimeSpan.FromSeconds(75));
         var connected = _pipe.WaitForConnectionAsync(startup.Token);
         var exited = _process.WaitForExitAsync(startup.Token);
-        if (await Task.WhenAny(connected, exited) == exited)
+        if (await Task.WhenAny(connected, exited).ConfigureAwait(false) == exited)
         {
-            await exited;
+            await exited.ConfigureAwait(false);
             throw new IOException("The solver worker exited during startup. See cvpp-workers/last-stderr.log.");
         }
-        await connected;
-        var ready = await Wire.Read(_pipe, startup.Token);
-        if (ready.Kind != "ready") throw new InvalidDataException("The solver worker did not become ready.");
+        await connected.ConfigureAwait(false);
+        var ready = await Wire.Read(_pipe, startup.Token).ConfigureAwait(false);
+        if (ready.Kind != "ready" || ready.ProcessId is not > 0) throw new InvalidDataException("The solver worker did not become ready.");
+        _processId = ready.ProcessId.Value;
         if (ready.Compatibility != setup.Compatibility)
             throw new NotSupportedException("The worker's loaded mods or serialization schema differ from the game. Restart after updating mods.");
     }
 
-    internal async Task<SolveResult> Solve(SolveRequest request, Action<SolveProgress>? progress, CancellationToken token)
+    internal async Task<SolveResult> Solve(SolveRequest request, IProgress<SolveProgress>? progress, CancellationToken token)
     {
-        if (Interlocked.Exchange(ref _busy, 1) != 0) throw new InvalidOperationException("A solve is already running.");
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!await _operation.WaitAsync(0, token).ConfigureAwait(false)) throw new InvalidOperationException("A solve is already running.");
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetime.Token);
+            token = linked.Token;
             request.Options.Validate();
-            await Start(token);
+            await Start(token).ConfigureAwait(false);
             string id = Guid.NewGuid().ToString("N");
-            await Send(new WorkerMessage("solve", id, request), token);
-            using var deadline = new CancellationTokenSource();
+            await Send(new WorkerMessage("solve", id, request), token).ConfigureAwait(false);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             deadline.CancelAfter(TimeSpan.FromSeconds(request.Options.Seconds + 45));
             Task cancel = Task.CompletedTask;
             using var registration = token.Register(() => cancel = Cancel(id, deadline));
-            while (true)
+            try
             {
-                var message = await Wire.Read(_pipe!, deadline.Token);
-                if (message.Id != id) throw new InvalidDataException("Stale worker reply.");
-                if (message.Kind == "progress" && message.Progress != null) progress?.Invoke(message.Progress);
-                else if (message.Kind == "result" && message.Result != null)
+                while (true)
                 {
-                    await cancel;
-                    return message.Result;
+                    var message = await Wire.Read(_pipe!, deadline.Token).ConfigureAwait(false);
+                    if (message.Id != id) throw new InvalidDataException("Stale worker reply.");
+                    if (message.Kind == "progress" && message.Progress != null) progress?.Report(message.Progress);
+                    else if (message.Kind == "result" && message.Result != null) return message.Result;
+                    else if (message.Kind == "error") throw new InvalidOperationException(message.Error);
+                    else throw new InvalidDataException("Unexpected worker reply.");
                 }
-                else if (message.Kind == "error") throw new InvalidOperationException(message.Error);
-                else throw new InvalidDataException("Unexpected worker reply.");
             }
+            finally { await registration.DisposeAsync().ConfigureAwait(false); await cancel.ConfigureAwait(false); }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
-            await Stop(preserveLogs: true);
+            await Stop(preserveLogs: true).ConfigureAwait(false);
             throw new TimeoutException("The solver worker timed out. Try again.");
         }
-        catch { await Stop(preserveLogs: true); throw; }
-        finally { Volatile.Write(ref _busy, 0); }
+        catch (OperationCanceledException) { await Stop().ConfigureAwait(false); throw; }
+        catch { await Stop(preserveLogs: true).ConfigureAwait(false); throw; }
+        finally { _operation.Release(); }
     }
 
     private async Task Cancel(string id, CancellationTokenSource deadline)
     {
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        try { await Send(new WorkerMessage("cancel", id), deadline.Token); }
+        try { await Send(new WorkerMessage("cancel", id), deadline.Token).ConfigureAwait(false); }
         catch (Exception error) when (error is IOException or ObjectDisposedException or OperationCanceledException) { deadline.Cancel(); }
     }
 
     private async Task Send(WorkerMessage message, CancellationToken token)
     {
-        await _write.WaitAsync(token);
-        try { await Wire.Write(_pipe!, message, token); }
+        await _write.WaitAsync(token).ConfigureAwait(false);
+        try { await Wire.Write(_pipe!, message, token).ConfigureAwait(false); }
         finally { _write.Release(); }
     }
 
@@ -164,10 +183,10 @@ internal sealed class WorkerClient(string executable, string package, string cac
     {
         await using var file = new StreamWriter(path);
         int written = 0;
-        while (await reader.ReadLineAsync() is { } line)
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            if (written > 1_048_576) { await file.FlushAsync(); file.BaseStream.SetLength(0); file.BaseStream.Position = 0; written = 0; }
-            await file.WriteLineAsync(line);
+            if (written > 1_048_576) { await file.FlushAsync().ConfigureAwait(false); file.BaseStream.SetLength(0); file.BaseStream.Position = 0; written = 0; }
+            await file.WriteLineAsync(line).ConfigureAwait(false);
             written += line.Length;
         }
     }
@@ -178,27 +197,75 @@ internal sealed class WorkerClient(string executable, string package, string cac
         _pipe = null;
         if (_process != null)
         {
-            if (!_process.HasExited) _process.Kill(entireProcessTree: true);
-            await _process.WaitForExitAsync();
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    await _process.StandardInput.BaseStream.WriteAsync(new byte[] { 0 }).ConfigureAwait(false);
+                    await _process.StandardInput.BaseStream.FlushAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException) { }
+            try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+            catch (TimeoutException)
+            {
+                try { _process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) when (_process.HasExited) { }
+                await _process.WaitForExitAsync().ConfigureAwait(false);
+            }
             _process.Dispose();
             _process = null;
+            _processId = 0;
         }
-        if (_stdout != null) await _stdout;
-        if (_stderr != null) await _stderr;
-        _stdout = _stderr = null;
-        if (_directory != null && Directory.Exists(_directory))
+        try { await Task.WhenAll(_stdout ?? Task.CompletedTask, _stderr ?? Task.CompletedTask).ConfigureAwait(false); }
+        finally
         {
-            if (preserveLogs)
-                foreach (string name in new[] { "stdout.log", "stderr.log" })
-                    if (File.Exists(Path.Combine(_directory, name))) File.Copy(Path.Combine(_directory, name), Path.Combine(cache, "last-" + name), overwrite: true);
-            Directory.Delete(_directory, recursive: true);
+            _stdout = _stderr = null;
+            _lease?.Dispose();
+            _lease = null;
+            if (_directory != null && Directory.Exists(_directory))
+            {
+                try
+                {
+                    if (preserveLogs)
+                        foreach (string name in new[] { "stdout.log", "stderr.log" })
+                            if (File.Exists(Path.Combine(_directory, name))) File.Copy(Path.Combine(_directory, name), Path.Combine(cache, "last-" + name), overwrite: true);
+                }
+                finally { Directory.Delete(_directory, recursive: true); }
+            }
+            _directory = null;
         }
-        _directory = null;
     }
 
-    public async ValueTask DisposeAsync()
+    private static void Reap(string cache)
     {
-        await Stop();
-        _write.Dispose();
+        if (!Directory.Exists(cache)) return;
+        foreach (string directory in Directory.EnumerateDirectories(cache, "cvpp-*"))
+        {
+            string marker = Path.Combine(directory, ".cvpp-worker");
+            if (!File.Exists(marker)) continue;
+            try
+            {
+                using (new FileStream(marker, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException) { }
+        }
+    }
+
+    internal void Abort() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_operation) return new ValueTask(_dispose ??= Dispose());
+    }
+
+    private async Task Dispose()
+    {
+        _disposed = true;
+        _lifetime.Cancel();
+        await _operation.WaitAsync().ConfigureAwait(false);
+        try { await Stop().ConfigureAwait(false); }
+        finally { _lifetime.Dispose(); _write.Dispose(); _operation.Release(); }
     }
 }

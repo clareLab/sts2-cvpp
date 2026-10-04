@@ -31,6 +31,7 @@ internal static class SolverHud
     private static CombatPlan? _shown;
     private static int _shownStep = -1;
     private static string? _error;
+    private static Color _handleColor;
     private static bool _dragging;
     private static Vector2 _offset;
     private static Vector2 _view;
@@ -130,6 +131,7 @@ internal static class SolverHud
         footer.AddThemeConstantOverride("separation", 8);
         column.AddChild(footer);
         _status = Ui.Text("Ready", 16);
+        _status.AddThemeColorOverride("font_color", Ui.Muted);
         _status.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         _status.ClipText = true;
         _status.MouseFilter = Control.MouseFilterEnum.Pass;
@@ -213,6 +215,8 @@ internal static class SolverHud
         if (_layer == null) return;
         bool busy = SolverController.Busy;
         var plan = SolverController.Plan;
+        if (_shown != plan) Populate();
+        if (_shownStep != SolverController.Step) UpdateStep();
         _layer.Visible = (CombatManager.Instance.IsInProgress || busy || plan != null)
             && !RunManager.Instance.IsPaused && NGame.Instance?.Transition.InTransition != true;
         if (!_layer.Visible) return;
@@ -234,11 +238,12 @@ internal static class SolverHud
         {
             _error = SolverController.Error;
             if (_error != null) Open(_route);
+            _status.AddThemeColorOverride("font_color", _error == null ? Ui.Muted : new Color("e8a39b"));
         }
         _status.Text = _error == null ? SolverController.Status : "Unable to continue · hover for details";
         _status.TooltipText = _error ?? SolverController.Status;
-        _status.AddThemeColorOverride("font_color", _error == null ? Ui.Muted : new Color("e8a39b"));
-        _handle.AddThemeColorOverride("font_color", _error != null ? new Color("e8a39b") : busy ? Ui.Gold : new Color("eee5cf"));
+        Color handleColor = _error != null ? new Color("e8a39b") : busy ? Ui.Gold : new Color("eee5cf");
+        if (_handleColor != handleColor) { _handleColor = handleColor; _handle.AddThemeColorOverride("font_color", handleColor); }
         _stats.Text = busy ? $"{SolverController.Elapsed:F1}s" : "";
         int? hp = busy && !SolverController.Executing ? SolverController.Progress?.BestHp : plan?.FinalHp;
         _score.Text = hp.HasValue ? $"{hp} HP" : "—";
@@ -246,7 +251,6 @@ internal static class SolverHud
         _progress.Visible = busy;
         _progress.Value = SolverController.Executing && plan != null ? (double)SolverController.Step / plan.Steps.Length
             : busy ? Math.Min(.98, (SolverController.Progress?.ElapsedMs ?? 0) / (SolverController.Seconds * 1000)) : 0;
-        if (_shown != plan || _shownStep != SolverController.Step) Populate();
         Layout();
     }
 
@@ -254,7 +258,7 @@ internal static class SolverHud
     {
         _steps.Clear();
         _shown = SolverController.Plan;
-        _shownStep = SolverController.Step;
+        _shownStep = -1;
         _empty.Visible = _shown == null;
         if (_shown == null) return;
         var root = _steps.CreateItem();
@@ -273,11 +277,20 @@ internal static class SolverHud
             item.SetTooltipText(2, step.Label);
             item.SetCustomFontSize(2, 18);
             item.CustomMinimumHeight = 28;
-            if (index < _shownStep)
-                for (int column = 0; column < 3; column++) item.SetCustomColor(column, Ui.Muted);
-            if (index == _shownStep) item.Select(0);
         }
-        if (_shown.Steps.Length != 0) _steps.ScrollToItem(root.GetChild(Math.Min(_shownStep, _shown.Steps.Length - 1)));
+    }
+
+    private static void UpdateStep()
+    {
+        int previous = Math.Max(0, _shownStep);
+        _shownStep = SolverController.Step;
+        var root = _steps.GetRoot();
+        if (root == null || _shown == null || _shown.Steps.Length == 0) return;
+        _steps.DeselectAll();
+        for (int index = previous; index < _shownStep; index++)
+            for (int column = 0; column < 3; column++) root.GetChild(index).SetCustomColor(column, Ui.Muted);
+        if (_shownStep < _shown.Steps.Length) root.GetChild(_shownStep).Select(0);
+        _steps.ScrollToItem(root.GetChild(Math.Min(_shownStep, _shown.Steps.Length - 1)));
     }
 
     private static void Layout()

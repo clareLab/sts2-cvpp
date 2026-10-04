@@ -15,6 +15,8 @@ internal enum ExecutionRange { Step, Turn, Combat }
 internal static class SolverController
 {
     private static WorkerClient? _worker;
+    private static WorkerClient? _retiring;
+    private static Task _release = Task.CompletedTask;
     private static CancellationTokenSource? _cancel;
     private static Task? _operation;
     private static readonly Stopwatch Clock = new();
@@ -22,6 +24,11 @@ internal static class SolverController
     private static bool _initialized;
     private static RunState? _run;
     private static object? _room;
+    private static int _generation;
+    private static ulong _idleSince;
+    internal static ulong IdleMilliseconds { get; set; } = 120_000;
+    internal static int? WorkerPid => _worker?.ProcessId;
+    internal static bool WorkerReleased => _worker == null && _release.IsCompleted;
     internal static bool Busy => _operation is { IsCompleted: false };
     internal static bool Executing { get; private set; }
     internal static string Status { get; private set; } = "Ready";
@@ -57,6 +64,8 @@ internal static class SolverController
             if (run != _run || run?.CurrentRoom != _room)
             {
                 Stop();
+                _generation++;
+                ReleaseWorker();
                 _run = run;
                 _room = run?.CurrentRoom;
                 Plan = null;
@@ -65,12 +74,24 @@ internal static class SolverController
                 Status = "Ready";
                 Error = null;
             }
+            if (!Busy)
+            {
+                _operation = null;
+                _cancel?.Dispose();
+                _cancel = null;
+                if (!CombatManager.Instance.IsInProgress || Time.GetTicksMsec() - _idleSince >= IdleMilliseconds) ReleaseWorker();
+            }
             SolverHud.Tick();
         }
         catch (Exception error)
         {
             Error = error.Message;
             GD.PrintErr("[cvpp] UI: " + error);
+            Stop();
+            _generation++;
+            ReleaseWorker();
+            Plan = null;
+            Progress = null;
             ((SceneTree)Engine.GetMainLoop()).ProcessFrame -= Tick;
             SolverHud.Disable();
         }
@@ -79,20 +100,30 @@ internal static class SolverController
     internal static void Solve(bool takeOver = false) => Launch(async () =>
     {
         if (!Ready) throw new InvalidOperationException("Wait for your turn and finish any open card selection.");
+        int generation = _generation;
         var previous = Plan?.Steps.Skip(Step).ToArray();
         Progress = null;
         Status = "Starting solver";
         var position = await CombatPosition.Capture();
+        await _release;
+        if (generation != _generation) return;
+        _cancel!.Token.ThrowIfCancellationRequested();
         uint[]? incumbent = previous is { Length: > 0 } && previous[0].Before == position.State
             ? previous.Select(step => step.Action).ToArray() : null;
         if (incumbent == null) { Plan = null; Step = 0; }
         _worker ??= new WorkerClient(OS.GetExecutablePath(), Path.GetDirectoryName(typeof(Entry).Assembly.Location)!,
             ProjectSettings.GlobalizePath("user://cvpp-workers"), WorkerEnvironment.Capture());
-        var result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds), incumbent), progress =>
+        bool acceptingProgress = true;
+        var updates = new Progress<SolveProgress>(progress =>
         {
+            if (!acceptingProgress || generation != _generation) return;
             Progress = progress;
             Status = "Searching";
-        }, _cancel!.Token);
+        });
+        SolveResult result;
+        try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds), incumbent), updates, _cancel!.Token); }
+        finally { acceptingProgress = false; }
+        if (generation != _generation) return;
         if (!Ready || CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != position.State)
         {
             Plan = null;
@@ -160,20 +191,19 @@ internal static class SolverController
         _cancel = new CancellationTokenSource();
         Error = null;
         Clock.Restart();
-        _operation = Run(action);
+        _operation = Run(action, _generation);
     }
 
-    private static async Task Run(Func<Task> action)
+    private static async Task Run(Func<Task> action, int generation)
     {
         try { await action(); }
-        catch (OperationCanceledException) { Status = "Stopped"; }
+        catch (OperationCanceledException) { if (generation == _generation) Status = "Stopped"; }
         catch (Exception error)
         {
-            Status = "Unable to continue";
-            Error = error.Message;
+            if (generation == _generation) { Status = "Unable to continue"; Error = error.Message; }
             GD.PrintErr("[cvpp] " + error);
         }
-        finally { Clock.Stop(); }
+        finally { Clock.Stop(); _idleSince = Time.GetTicksMsec(); }
     }
 
     internal static void Stop() => _cancel?.Cancel();
@@ -193,7 +223,22 @@ internal static class SolverController
     private static void Shutdown()
     {
         Stop();
-        if (_worker != null) Task.Run(async () => await _worker.DisposeAsync()).GetAwaiter().GetResult();
+        _worker?.Abort();
+        _retiring?.Abort();
+    }
+
+    private static void ReleaseWorker()
+    {
+        if (_worker == null) return;
+        var worker = _worker;
+        _worker = null;
+        _retiring = worker;
+        _release = Task.Run(async () =>
+        {
+            try { await worker.DisposeAsync(); }
+            catch (Exception error) { GD.PrintErr("[cvpp] Worker cleanup: " + error); }
+            finally { _retiring = null; }
+        });
     }
 }
 

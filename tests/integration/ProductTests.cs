@@ -26,6 +26,9 @@ internal static class ProductTests
         await Until(() => NativeCombat.IsStable(run), "product combat");
         await Until(() => Tree.Root.FindChild("CvppToolbar", true, false) is Control { } toolbar && toolbar.IsVisibleInTree(), "automatic toolbar installation");
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) RenderingServer.RenderLoopEnabled = false;
+        string? exit = OS.GetCmdlineArgs().FirstOrDefault(argument => argument.StartsWith("--cvpp-exit="));
+        if (exit != null) await LifecycleTests.Exit(exit.Split('=')[1]);
+        if (characterId == "IRONCLAD") await LifecycleTests.Faults(await CombatPosition.Capture());
         string before = CombatFingerprint.Capture(run);
         SolverController.Seconds = 5;
         var timing = Stopwatch.StartNew();
@@ -33,6 +36,7 @@ internal static class ProductTests
         await Until(() => !SolverController.Busy, "worker solve", 100);
         var plan = SolverController.Plan ?? throw new InvalidOperationException(SolverController.Error ?? SolverController.Status);
         double firstSolveMs = timing.Elapsed.TotalMilliseconds;
+        int worker = SolverController.WorkerPid ?? throw new InvalidOperationException("Worker was not retained during combat.");
         if (CombatFingerprint.Capture(run) != before) throw new InvalidOperationException("Searching mutated the live game.");
         SolverHud.Tick();
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
@@ -70,12 +74,26 @@ internal static class ProductTests
         double cancelledSolveMs = timing.Elapsed.TotalMilliseconds;
         if (SolverController.Error != null || CombatFingerprint.Capture(run) != before)
             throw new InvalidOperationException("Solving the current turn mutated the live game.");
+        object? memory = characterId == "IRONCLAD" ? await LifecycleTests.Repeat(run, worker) : null;
+        plan = SolverController.Plan!;
+        if (characterId == "IRONCLAD")
+        {
+            SolverController.IdleMilliseconds = 1;
+            try { await LifecycleTests.Released(worker); }
+            finally { SolverController.IdleMilliseconds = 120_000; }
+            if (SolverController.Plan != plan) throw new InvalidOperationException("Idle retirement discarded the route.");
+        }
         SolverController.Play(ExecutionRange.Combat);
         await Until(() => !SolverController.Busy, "take over", 60);
         if (SolverController.Error != null || CombatManager.Instance.IsInProgress || run.Players.Single().Creature.CurrentHp != plan.FinalHp)
             throw new InvalidOperationException(SolverController.Error ?? "Takeover did not reproduce the winning route.");
+        await LifecycleTests.Released(worker);
+        RunManager.Instance.CleanUp();
+        await Until(() => SolverController.Plan == null, "clear ended run");
+        if (Tree.Root.FindChild("CvppSteps", true, false) is not Godot.Tree steps || steps.GetRoot() != null)
+            throw new InvalidOperationException("Hidden route retained tree items.");
         GD.Print($"[cvpp] PRODUCT {plan.FinalHp} HP, {plan.Steps.Length} steps; step, turn, cancellation, current-position replay and takeover verified");
-        return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs };
+        return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs, memory };
     }
 
     internal static async Task Until(Func<bool> ready, string stage, int seconds = 30)

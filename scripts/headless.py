@@ -5,9 +5,55 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def owned_processes(sandbox):
+    owned = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if str(sandbox).encode() in (process / "cmdline").read_bytes():
+                owned.append(int(process.name))
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass
+    return owned
+
+
+def check_exit(process, profile, mode):
+    marker = profile / "cvpp-exit.json"
+    deadline = time.monotonic() + 130
+    while not marker.is_file():
+        if process.poll() is not None or time.monotonic() > deadline:
+            raise RuntimeError("Exit probe did not become ready")
+        time.sleep(0.05)
+    probe = json.loads(marker.read_text())
+    worker = Path(f"/proc/{probe['worker']}")
+    started = time.monotonic()
+    if mode not in {"normal", "menu"}:
+        os.kill(probe["parent"], signal.SIGKILL)
+    while True:
+        try:
+            alive = (worker / "stat").read_text().split(") ", 1)[1].split()[0] != "Z"
+        except FileNotFoundError:
+            alive = False
+        if (
+            not alive
+            and not Path(probe["sandbox"]).exists()
+            and not owned_processes(probe["sandbox"])
+        ):
+            break
+        if time.monotonic() - started > 15:
+            raise RuntimeError(f"Worker or sandbox survived {mode} parent exit: {probe}")
+        time.sleep(0.05)
+    status = process.wait(timeout=10)
+    if mode in {"normal", "menu"} and status != 0:
+        raise RuntimeError(f"Normal shutdown exited with {status}")
+    return {"success": True, "mode": mode, "reclaimedSeconds": time.monotonic() - started}
 
 
 def main():
@@ -20,9 +66,12 @@ def main():
     parser.add_argument("--replay", type=Path)
     parser.add_argument("--save", type=Path)
     parser.add_argument("--product-only", action="store_true")
+    parser.add_argument("--exit", choices=["startup", "search", "normal", "menu"])
     args = parser.parse_args()
     source, data = args.source.resolve(), args.data.resolve()
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
+    if args.exit:
+        name = "exit-" + args.exit
     if args.mod:
         name += "-modded"
     package = ROOT / "artifacts/integration/dist/cvpp"
@@ -91,6 +140,8 @@ def main():
             command.append("--cvpp-benchmark")
         if args.product_only:
             command.append("--cvpp-product-only")
+        if args.exit:
+            command.extend(["--cvpp-product-only", "--cvpp-exit=" + args.exit])
         if args.ui:
             command.remove("--headless")
             command.extend(
@@ -115,6 +166,11 @@ def main():
                 start_new_session=True,
             )
             try:
+                if args.exit:
+                    exit_report = check_exit(process, profile, args.exit)
+                    (results / f"{name}.json").write_text(json.dumps(exit_report, indent=2) + "\n")
+                    print(f"PASS {args.exit} parent exit: worker and sandbox reclaimed")
+                    return
                 status = process.wait(timeout=300 if args.benchmark or args.ui else 180)
             finally:
                 if process.poll() is None:
@@ -124,6 +180,11 @@ def main():
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait(timeout=5)
+                for pid in owned_processes(directory):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
         report_path = profile / "cvpp-selftest.json"
         for screenshot in profile.glob("cvpp-ui-*.png"):
             shutil.copy2(screenshot, results / screenshot.name.removeprefix("cvpp-"))

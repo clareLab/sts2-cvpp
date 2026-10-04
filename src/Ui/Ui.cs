@@ -18,14 +18,12 @@ internal static class Ui
     internal static readonly Color Muted = new("83918d");
     internal static readonly Color Gold = new("f2d68d");
     private static Theme? _theme;
-    private static readonly Dictionary<string, Texture2D> Textures = new();
     internal static Theme Theme => _theme ??= CreateTheme();
 
     internal static Texture2D Texture(string path)
     {
-        if (Textures.TryGetValue(path, out var cached)) return cached;
         var texture = GD.Load<Texture2D>(path);
-        return Textures[path] = texture is AtlasTexture atlas
+        return texture is AtlasTexture atlas
             ? new AtlasTexture { Atlas = atlas.Atlas, Region = atlas.Region, FilterClip = true } : texture;
     }
 

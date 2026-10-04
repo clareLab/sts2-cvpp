@@ -39,7 +39,7 @@ internal static class WorkerHost
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
             Engine.MaxFps = 10;
-            await Wire.Write(pipe, new WorkerMessage("ready", Compatibility: WorkerEnvironment.Capture().Compatibility));
+            await Wire.Write(pipe, new WorkerMessage("ready", ProcessId: System.Environment.ProcessId, Compatibility: WorkerEnvironment.Capture().Compatibility));
             var incoming = Channel.CreateBounded<WorkerMessage>(1);
             var outgoing = Channel.CreateBounded<WorkerMessage>(new BoundedChannelOptions(16)
             { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });

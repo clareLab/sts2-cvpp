@@ -35,6 +35,7 @@ internal sealed class NativeCombat : IAsyncDisposable
     private bool _disposed;
     private readonly CombatChoices _choices = new();
     private IDisposable? _selector;
+    private ActionExecutor? _executor;
     private Exception? _failure;
     private readonly bool _live;
 
@@ -60,7 +61,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         if (live)
         {
             _selector = CardSelectCmd.PushSelector(_choices, localOnly: true);
-            Manager.ActionExecutor.AfterActionExecuted += AfterAction;
+            (_executor = Manager.ActionExecutor).AfterActionExecuted += AfterAction;
             CombatManager.Instance.CombatWon += Won;
         }
     }
@@ -106,7 +107,8 @@ internal sealed class NativeCombat : IAsyncDisposable
             _selector?.Dispose();
             _selector = null;
             CombatManager.Instance.CombatWon -= Won;
-            if (Manager.IsInProgress) Manager.ActionExecutor.AfterActionExecuted -= AfterAction;
+            if (_executor != null) _executor.AfterActionExecuted -= AfterAction;
+            _executor = null;
             if (!_live && Manager.IsInProgress) Manager.CleanUp();
             _failure = null;
             Victory = false;
@@ -318,7 +320,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         Mark("deserialize_ms");
         await Manager.SetUpSavedSingleplayer(run, save);
         _selector = CardSelectCmd.PushSelector(_choices, localOnly: true);
-        Manager.ActionExecutor.AfterActionExecuted += AfterAction;
+        (_executor = Manager.ActionExecutor).AfterActionExecuted += AfterAction;
         CombatManager.Instance.CombatWon += Won;
         if (Mode == CombatExecution.Worker)
         {
