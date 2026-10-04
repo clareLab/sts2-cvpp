@@ -10,6 +10,14 @@ internal sealed class CombatCheckpoint
     private readonly byte[] _bytes;
     internal int Length => _bytes.Length;
     internal string Digest => Convert.ToHexString(SHA256.HashData(_bytes));
+    internal byte[] Export() => _bytes.ToArray();
+
+    internal static CombatCheckpoint Import(byte[] bytes)
+    {
+        var reader = new PacketReader();
+        reader.Reset(bytes);
+        return new CombatCheckpoint(reader.Read<CombatReplay>());
+    }
 
     internal CombatCheckpoint(CombatReplay replay)
     {

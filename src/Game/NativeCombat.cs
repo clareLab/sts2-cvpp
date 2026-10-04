@@ -1,16 +1,15 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
-using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Rooms;
@@ -37,21 +36,33 @@ internal sealed class NativeCombat : IAsyncDisposable
     private readonly CombatChoices _choices = new();
     private IDisposable? _selector;
     private Exception? _failure;
+    private readonly bool _live;
 
     internal CombatExecution Mode { get; set; } = CombatExecution.Reference;
     internal bool PumpContinuations { get; set; } = true;
     internal bool HasChoice => _choices.Pending != null;
+    internal uint ChoiceId => _choices.ChoiceId;
     internal bool Victory { get; private set; }
     private bool AtChoice => HasChoice && !Manager.ActionExecutor.IsRunning;
 
-    internal NativeCombat()
+    internal NativeCombat(bool live = false)
     {
-        if (DisplayServer.GetName() != "headless"
-            || !File.Exists(ProjectSettings.GlobalizePath("user://.cvpp-test-sandbox"))
+        if ((!live && (DisplayServer.GetName() != "headless"
+            || !File.Exists(ProjectSettings.GlobalizePath("user://.cvpp-test-sandbox"))))
             || SynchronizationContext.Current != Dispatcher.SynchronizationContext)
             throw new InvalidOperationException("Native combat requires an isolated Godot headless host.");
         if (_owner != null) throw new InvalidOperationException("A native combat session already owns this process.");
+        if (live && (Manager.DebugOnlyGetState() is not { } state || state.Players.Count != 1
+            || Manager.NetService.Type != NetGameType.Singleplayer || !IsStable(state)))
+            throw new InvalidOperationException("Wait for a single-player combat decision.");
         _owner = this;
+        _live = live;
+        if (live)
+        {
+            _selector = CardSelectCmd.PushSelector(_choices, localOnly: true);
+            Manager.ActionExecutor.AfterActionExecuted += AfterAction;
+            CombatManager.Instance.CombatWon += Won;
+        }
     }
 
     private void EnsureOwner()
@@ -96,7 +107,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             _selector = null;
             CombatManager.Instance.CombatWon -= Won;
             if (Manager.IsInProgress) Manager.ActionExecutor.AfterActionExecuted -= AfterAction;
-            Manager.CleanUp();
+            if (!_live) Manager.CleanUp();
             _failure = null;
             Victory = false;
         }
@@ -106,6 +117,7 @@ internal sealed class NativeCombat : IAsyncDisposable
     {
         EnsureOwner();
         await CleanUp();
+        if (_live) return;
         TestMode.IsOn = false;
         NonInteractiveMode.AutoSlayerCheck = static () => false;
         Mode = CombatExecution.Reference;
@@ -118,14 +130,17 @@ internal sealed class NativeCombat : IAsyncDisposable
         try { await Reset(); }
         finally
         {
-            TestMode.IsOn = _originalTestMode;
-            NonInteractiveMode.AutoSlayerCheck = _originalNonInteractive;
+            if (!_live)
+            {
+                TestMode.IsOn = _originalTestMode;
+                NonInteractiveMode.AutoSlayerCheck = _originalNonInteractive;
+            }
             _owner = null;
             _disposed = true;
         }
     }
 
-    internal uint[] Actions(RunState run)
+    internal uint[] Actions(RunState run, bool includePotions = true)
     {
         Check(run);
         if (_choices.Pending is { } pending)
@@ -150,7 +165,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             }
             else if (card.IsValidTarget(null)) actions.Add(token);
         }
-        for (int index = 0; index < player.PotionSlots.Count; index++)
+        for (int index = 0; includePotions && index < player.PotionSlots.Count; index++)
         {
             var potion = player.GetPotionAtSlotIndex(index);
             if (potion == null || !CanUse(potion)) continue;
@@ -190,7 +205,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         return (potion, target);
     }
 
-    private (CardModel Card, Creature? Target) Resolve(RunState run, uint token)
+    internal (CardModel Card, Creature? Target) Resolve(RunState run, uint token)
     {
         Check(run);
         var player = run.Players.Single();
@@ -221,6 +236,21 @@ internal sealed class NativeCombat : IAsyncDisposable
         }
         var (card, target) = Resolve(run, token);
         return target == null ? card.Id.Entry : $"{card.Id.Entry}:{target.ModelId.Entry}";
+    }
+
+    internal string Label(RunState run, uint token)
+    {
+        Check(run);
+        if (token == EndTurn) return "End turn";
+        if ((token & 0xc0000000) == Selection)
+        {
+            var cards = _choices.Pending?[token & 0x3fffffff] ?? throw new InvalidOperationException("No selection is pending.");
+            return cards.Length == 0 ? "Skip selection" : "Choose · " + string.Join(", ", cards.Select(card => card.Title));
+        }
+        var (card, target) = Resolve(run, token);
+        string? name = target?.Monster?.Title.GetFormattedText();
+        if (target != null && name == null) name = "Player";
+        return name == null ? card.Title : $"{card.Title} → {name}";
     }
 
     internal async ValueTask Execute(RunState run, uint token)
@@ -259,6 +289,7 @@ internal sealed class NativeCombat : IAsyncDisposable
     internal async ValueTask<RunState> Restore(CombatCheckpoint checkpoint, Dictionary<string, double>? timings = null)
     {
         EnsureOwner();
+        if (_live) throw new InvalidOperationException("Live combat cannot restore a checkpoint.");
         long started = Stopwatch.GetTimestamp();
         void Mark(string stage)
         {
@@ -335,7 +366,9 @@ internal sealed class NativeCombat : IAsyncDisposable
     internal bool Finished => !CombatManager.Instance.IsInProgress && !Manager.ActionExecutor.IsRunning
         && Manager.ActionQueueSet.IsEmpty;
 
-    internal bool Stable(RunState run) => !HasChoice && CombatManager.Instance.IsInProgress
+    internal bool Stable(RunState run) => !HasChoice && IsStable(run);
+
+    internal static bool IsStable(RunState run) => CombatManager.Instance.IsInProgress
         && !Manager.NetService.IsGameLoading && !Manager.ActionExecutor.IsRunning
         && Manager.ActionQueueSet.IsEmpty && !CombatManager.Instance.IsStarting
         && !CombatManager.Instance.EndingPlayerTurnPhaseOne && !CombatManager.Instance.EndingPlayerTurnPhaseTwo
@@ -345,34 +378,22 @@ internal sealed class NativeCombat : IAsyncDisposable
     internal string Fingerprint(RunState run)
     {
         Check(run);
-        var writer = new PacketWriter { WarnOnGrow = false };
-        writer.Write(NetFullCombatState.FromRun(run, null).Anonymized());
-        foreach (var player in run.Players) writer.Write(player.PlayerRng.ToSerializable());
-        var combat = (run.CurrentRoom as CombatRoom)?.CombatState
-            ?? throw new InvalidOperationException("State capture requires a combat room.");
-        writer.WriteInt(combat.RoundNumber);
-        writer.WriteEnum(combat.CurrentSide);
-        foreach (var creature in combat.Creatures)
-        {
-            if (creature.Monster is not { } monster) continue;
-            writer.WriteBool(monster.Rng != null);
-            if (monster.Rng != null) writer.Write(monster.Rng.ToSerializable());
-            writer.WriteString(monster.NextMove.Id);
-            var moves = monster.MoveStateMachine?.StateLog;
-            writer.WriteInt(moves?.Count ?? 0);
-            if (moves != null)
-                foreach (var move in moves) writer.WriteString(move.Id);
-        }
-        writer.WriteBool(HasChoice);
-        if (_choices.Pending is { } pending)
-        {
-            writer.WriteInt(pending.Minimum);
-            writer.WriteInt(pending.Maximum);
-            writer.WriteInt(pending.Options.Length);
-            foreach (var card in pending.Options) writer.Write(card.ToSerializable());
-        }
-        writer.ZeroByteRemainder();
-        return Convert.ToHexString(SHA256.HashData(writer.Buffer.AsSpan(0, writer.BytePosition)));
+        return CombatFingerprint.Capture(run, _choices.Pending);
+    }
+
+    internal async ValueTask CompleteRecorded(RunState run, PlayerChoiceResult result)
+    {
+        Check(run);
+        _choices.CompleteRecorded(result);
+        await Until(() => AtChoice || Finished || Stable(run), "recorded selection");
+    }
+
+    internal async ValueTask ExecuteRecorded(RunState run, GameAction action)
+    {
+        Check(run);
+        if (!Stable(run)) throw new InvalidOperationException("Replay is not at an action boundary.");
+        Manager.ActionQueueSynchronizer.RequestEnqueue(action);
+        await Until(() => AtChoice || Finished || Stable(run), "recorded action");
     }
 
     internal async ValueTask Until(Func<bool> ready, string stage)

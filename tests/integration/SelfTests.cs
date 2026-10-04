@@ -25,7 +25,7 @@ internal static class SelfTests
     internal static void Initialize()
     {
         if (!OS.GetCmdlineArgs().Contains("--cvpp-selftest")) return;
-        if (DisplayServer.GetName() != "headless"
+        if ((DisplayServer.GetName() != "headless" && !OS.GetCmdlineArgs().Contains("--cvpp-ui"))
             || !File.Exists(ProjectSettings.GlobalizePath("user://.cvpp-test-sandbox")))
             throw new InvalidOperationException("An isolated headless test sandbox is required.");
         new Harmony("clarelab.cvpp.selftest").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
@@ -37,31 +37,39 @@ internal static class SelfTests
         string? failure = null;
         object? benchmark = null;
         object? regressions = null;
+        object? product = null;
         try
         {
             await Until(() => NGame.Instance != null && SaveManager.Instance.IsProfileInitialized, "startup");
             await NGame.Instance!.GameStartupComplete;
             await Until(() => !NGame.Instance.Transition.InTransition, "main menu");
-            await NAssetLoader.Instance.LoadInTheBackground(PreloadManager.Cache.CreateSession("cvpp-startup", []))
-                .WaitAsync(TimeSpan.FromSeconds(30));
+            if (DisplayServer.GetName() == "headless")
+                await NAssetLoader.Instance.LoadInTheBackground(PreloadManager.Cache.CreateSession("cvpp-startup", []))
+                    .WaitAsync(TimeSpan.FromSeconds(30));
             Check(!TestMode.IsOn, "official game rules");
             Check(NativeCore.Initialize() == NativeCore.ExpectedAbi, "Rust loaded inside Godot");
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
-            if (OS.GetCmdlineArgs().Contains("--cvpp-benchmark"))
+            if (!OS.GetCmdlineArgs().Contains("--cvpp-ui"))
             {
-                benchmark = await NativeBenchmark.Run();
-                Check(true, "native branch replay benchmark");
+                if (OS.GetCmdlineArgs().Contains("--cvpp-benchmark"))
+                {
+                    benchmark = await NativeBenchmark.Run();
+                    Check(true, "native branch replay benchmark");
+                }
+                else await Smoke();
+                regressions = await NativeRegressions.Run();
+                Check(true, "native choices, potions, generated cards, cross-turn replay and bounded search");
             }
-            else await Smoke();
-            regressions = await NativeRegressions.Run();
-            Check(true, "native choices, potions, generated cards, cross-turn replay and bounded search");
+            product = OS.GetCmdlineArgs().Contains("--cvpp-ui") ? await ProductTests.Run()
+                : new[] { await ProductTests.Run(), await ProductTests.Run("SILENT", "CVPP-REGRESSION-001") };
+            Check(true, "isolated worker, live state preservation, step, turn and takeover");
         }
         catch (Exception error)
         {
             failure = error.ToString();
         }
-        var report = new { success = failure == null, passed = Passed, benchmark, regressions, error = failure };
+        var report = new { success = failure == null, passed = Passed, benchmark, regressions, product, error = failure };
         string json = JsonSerializer.Serialize(report);
         File.WriteAllText(ProjectSettings.GlobalizePath("user://cvpp-selftest.json"), json);
         GD.Print("[cvpp] SELFTEST " + json);

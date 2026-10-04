@@ -14,6 +14,9 @@ internal static class SelectionTests
         var optional = new SelectionSet<int>([1, 2], 0, 2);
         if (optional.Count != 5 || optional[0].Length != 0)
             throw new InvalidOperationException("Optional multi-selection lost the empty choice.");
+        var skippable = new SelectionSet<int>([1, 2], 0, 1, allowSingleSkip: true);
+        if (skippable.Count != 3 || skippable[0].Length != 0 || skippable[2] is not [2])
+            throw new InvalidOperationException("An explicitly skippable choice lost legal alternatives.");
         Reject<ArgumentOutOfRangeException>(() => _ = choices[6]);
         Reject<NotSupportedException>(() => _ = new SelectionSet<int>([1], 0, 1).Count);
         Reject<NotSupportedException>(() => _ = new SelectionSet<int>([1], 2, 2).Count);

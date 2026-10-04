@@ -1,6 +1,7 @@
+mod planner;
 mod search;
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cvpp_abi_version() -> u32 {

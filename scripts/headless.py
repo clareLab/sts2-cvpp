@@ -15,9 +15,10 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("data", type=Path)
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--ui", action="store_true")
     args = parser.parse_args()
     source, data = args.source.resolve(), args.data.resolve()
-    name = "benchmark" if args.benchmark else "headless"
+    name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
     package = ROOT / "artifacts/integration/dist/cvpp"
     results = ROOT / "artifacts/validation"
     instances = ROOT / "artifacts/workers"
@@ -67,6 +68,11 @@ def main():
         ]
         if args.benchmark:
             command.append("--cvpp-benchmark")
+        if args.ui:
+            command.remove("--headless")
+            command.extend(
+                ["--cvpp-ui", "--rendering-method", "gl_compatibility", "--resolution", "1440x900"]
+            )
         if shutil.which("steam-run"):
             command.insert(0, "steam-run")
         environment = os.environ | {
@@ -86,7 +92,7 @@ def main():
                 start_new_session=True,
             )
             try:
-                status = process.wait(timeout=300 if args.benchmark else 120)
+                status = process.wait(timeout=300 if args.benchmark or args.ui else 180)
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -96,6 +102,10 @@ def main():
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait(timeout=5)
         report_path = profile / "cvpp-selftest.json"
+        if (profile / "cvpp-ui.png").is_file():
+            shutil.copy2(profile / "cvpp-ui.png", results / "ui.png")
+        for log_path in profile.glob("cvpp-workers/last-*.log"):
+            shutil.copy2(log_path, results / log_path.name)
         if not report_path.is_file():
             raise RuntimeError(f"Headless exited with {status}; see {results / f'{name}.log'}")
         report = json.loads(report_path.read_text())

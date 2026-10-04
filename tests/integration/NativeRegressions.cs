@@ -73,6 +73,10 @@ internal static class NativeRegressions
                         && run.Players.Single().GetPotionAtSlotIndex(1) == null, "native potion consumption");
             }
             traces.Add((path.ToArray(), states.ToArray()));
+            var position = await CombatPosition.Capture();
+            combat.Mode = CombatExecution.Worker;
+            run = await position.Restore(combat);
+            Require(combat.Fingerprint(run) == states[^1], "current-position replay matches live decisions");
         }
         combat.Mode = CombatExecution.Worker;
         var cursor = new ReplayCursor<RunState>(16, () => combat.Restore(checkpoint), combat.Execute);
@@ -144,10 +148,20 @@ internal static class NativeRegressions
             terminal.Add(new { victory, score, steps = path.Count });
             combat.Mode = CombatExecution.Reference;
         }
+        combat.Mode = CombatExecution.Worker;
+        using var stop = new CancellationTokenSource();
+        var baseline = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(3, 256, 96),
+            progress => { if (progress.BestHp.HasValue) stop.Cancel(); }, stop.Token);
+        Require(baseline.Plan is { Steps.Length: > 0 }, "cancellation preserves a complete winning baseline");
+        var health = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(3, 256, 96),
+            incumbent: baseline.Plan!.Steps.Select(step => step.Action).ToArray());
+        Require(health.Plan is { Steps.Length: > 0 }, "health planner finds a complete winning route");
+        Require(health.Plan!.FinalHp >= baseline.Plan.FinalHp, "health optimization preserves the best final HP");
+        Require(health.Plan!.Steps.All(step => (step.Action & 0xc0000000) != NativeCombat.Potion), "health planner does not use potions");
         await combat.DisposeAsync();
         Reject<ObjectDisposedException>(() => _ = combat.Actions(run));
         GD.Print($"[cvpp] REGRESSIONS {compared} reference states, {worker.Search.Stats.Evaluated} two-turn nodes");
-        return new { compared_states = compared, search = worker, terminal, checkpoint_bytes = checkpoint.Length };
+        return new { compared_states = compared, search = worker, terminal, baseline_hp = baseline.Plan.FinalHp, health, checkpoint_bytes = checkpoint.Length };
     }
 
     private static SerializableCard Card<T>(int upgrade = 0) where T : CardModel => new()

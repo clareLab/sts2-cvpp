@@ -43,6 +43,16 @@ if (interrupted.StopReason != "cancelled" || interrupted.Path is not [1] || inte
 Console.WriteLine("PASS cancellation preserves the best completed route");
 await ReplayTests.Run();
 SelectionTests.Run();
+using (var planner = new NativePlanner(32, 8))
+{
+    var plan = new uint[8];
+    while (planner.Next(plan) is >= 0 and var depth)
+        planner.Observe(depth == 2 ? checked((int)(plan[0] + plan[1])) : 0, depth == 2, depth == 2 ? [] : [1, 2]);
+    if (planner.Stats.Simulations != 7 || planner.Stats.Best != 4 || planner.Stats.Bounded != 0)
+        throw new InvalidOperationException("Native planner lost branches or rewards.");
+}
+Console.WriteLine("PASS native planner traversal and reward backpropagation");
+await WireTests.Run();
 
 if (args.Contains("--benchmark"))
 {

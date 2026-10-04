@@ -1,6 +1,6 @@
 namespace cvpp;
 
-internal sealed class SelectionSet<T>(IEnumerable<T> options, int minimum, int maximum)
+internal sealed class SelectionSet<T>(IEnumerable<T> options, int minimum, int maximum, bool allowSingleSkip = false)
 {
     internal T[] Options { get; } = options.ToArray();
     internal int Minimum { get; } = minimum;
@@ -19,7 +19,7 @@ internal sealed class SelectionSet<T>(IEnumerable<T> options, int minimum, int m
     {
         if (Minimum < 0 || Maximum < Minimum || Minimum > Options.Length)
             throw new NotSupportedException("The official selector supplied unsupported selection bounds.");
-        if (Minimum == 0 && Maximum == 1)
+        if (Minimum == 0 && Maximum == 1 && !allowSingleSkip)
             throw new NotSupportedException("This selector does not expose whether skipping the choice is legal.");
         int maximum = Math.Min(Maximum, Options.Length);
         if (maximum > 64) throw new NotSupportedException("Selection depth exceeds the search limit.");

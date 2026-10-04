@@ -1,4 +1,5 @@
 using Godot;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
 
 namespace cvpp;
@@ -11,10 +12,13 @@ public static class Entry
         try
         {
             uint abi = NativeCore.Initialize();
+            new Harmony("clarelab.cvpp.choices").CreateClassProcessor(typeof(ChoiceContractPatch)).Patch();
             GD.Print($"[cvpp] Loaded {typeof(Entry).Assembly.GetName().Version?.ToString(3)}, Rust ABI {abi}");
+            if (WorkerHost.Active) { WorkerHost.Initialize(); return; }
 #if CVPP_SELFTEST
-            SelfTests.Initialize();
+            if (OS.GetCmdlineArgs().Contains("--cvpp-selftest")) { SelfTests.Initialize(); return; }
 #endif
+            SolverController.Initialize();
         }
         catch (Exception error)
         {

@@ -8,11 +8,11 @@
   <ItemGroup>
     <Reference Include="sts2"><HintPath>$(Sts2DataDir)/sts2.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="GodotSharp"><HintPath>$(Sts2DataDir)/GodotSharp.dll</HintPath><Private>false</Private></Reference>
-    <Reference Include="0Harmony" Condition="'$(CvppSelfTest)' == 'true'"><HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Compile Include="../tests/integration/*.cs" Link="%(Filename)%(Extension)" Condition="'$(CvppSelfTest)' == 'true'" />
   </ItemGroup>
   <Target Name="Package" AfterTargets="Build">
     <MakeDir Directories="$(ArtifactsPath)/dist/cvpp" />
-    <Copy SourceFiles="$(TargetPath);$(NativeCorePath);$(MSBuildProjectDirectory)/cvpp.json" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
+    <Copy SourceFiles="$(TargetPath);$(NativeCorePath);$(MSBuildProjectDirectory)/cvpp.json;$(MSBuildProjectDirectory)/../LICENSE" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
   </Target>
 </Project>

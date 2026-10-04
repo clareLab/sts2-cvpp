@@ -6,7 +6,7 @@ namespace cvpp;
 
 internal static partial class NativeCore
 {
-    internal const uint ExpectedAbi = 3;
+    internal const uint ExpectedAbi = 4;
 
     static NativeCore() => NativeLibrary.SetDllImportResolver(typeof(NativeCore).Assembly, Resolve);
 
