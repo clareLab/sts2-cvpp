@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Godot;
 using HarmonyLib;
@@ -10,7 +9,6 @@ using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -38,6 +36,7 @@ internal static class SelfTests
     {
         string? failure = null;
         object? benchmark = null;
+        object? regressions = null;
         try
         {
             await Until(() => NGame.Instance != null && SaveManager.Instance.IsProfileInitialized, "startup");
@@ -55,12 +54,14 @@ internal static class SelfTests
                 Check(true, "native branch replay benchmark");
             }
             else await Smoke();
+            regressions = await NativeRegressions.Run();
+            Check(true, "native choices, potions, generated cards, cross-turn replay and bounded search");
         }
         catch (Exception error)
         {
             failure = error.ToString();
         }
-        var report = new { success = failure == null, passed = Passed, benchmark, error = failure };
+        var report = new { success = failure == null, passed = Passed, benchmark, regressions, error = failure };
         string json = JsonSerializer.Serialize(report);
         File.WriteAllText(ProjectSettings.GlobalizePath("user://cvpp-selftest.json"), json);
         GD.Print("[cvpp] SELFTEST " + json);
@@ -69,6 +70,7 @@ internal static class SelfTests
 
     private static async Task Smoke()
     {
+        await using var combat = new NativeCombat();
         var character = ModelDb.AllCharacters.Single(c => c.Id.Entry == "IRONCLAD");
         SaveManager.Instance.Progress.GetOrCreateCharacterStats(character.Id).TotalLosses = 2;
         var run = await NGame.Instance!.StartNewSingleplayerRun(character, true,
@@ -77,34 +79,20 @@ internal static class SelfTests
             .OrderBy(p => p.coord.row).ThenBy(p => p.coord.col).First();
         await RunManager.Instance.EnterMapCoord(point.coord);
         var player = run.Players.Single();
-        bool Stable() => !RunManager.Instance.ActionExecutor.IsRunning
-            && RunManager.Instance.ActionQueueSet.IsEmpty
-            && !CombatManager.Instance.IsStarting
-            && !CombatManager.Instance.PlayerActionsDisabled
-            && player.PlayerCombatState?.Phase == PlayerTurnPhase.Play;
-        await Until(Stable, "combat start");
+        await combat.Until(() => combat.Stable(run), "combat start");
         Check(CombatManager.Instance.IsInProgress, "official combat started");
-        string initial = Fingerprint(run);
-        Check(Fingerprint(run) == initial, "state capture preserves native RNG and state");
+        string initial = combat.Fingerprint(run);
+        Check(combat.Fingerprint(run) == initial, "state capture preserves native RNG and state");
         var card = player.PlayerCombatState!.Hand.Cards.First(c => c.Type == CardType.Attack && c.CanPlay());
         var enemy = player.Creature.CombatState!.HittableEnemies.First(card.IsValidTarget);
         int enemyHp = enemy.CurrentHp;
         RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(new PlayCardAction(card, enemy));
-        await Until(() => Stable() && enemy.CurrentHp < enemyHp, "native card action");
-        Check(Fingerprint(run) != initial, "native action changes combat state");
+        await combat.Until(() => combat.Stable(run) && enemy.CurrentHp < enemyHp, "native card action");
+        Check(combat.Fingerprint(run) != initial, "native action changes combat state");
         int turn = player.PlayerCombatState.TurnNumber;
         RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(new EndPlayerTurnAction(player, turn));
-        await Until(() => Stable() && player.PlayerCombatState.TurnNumber > turn, "native next turn");
+        await combat.Until(() => combat.Stable(run) && player.PlayerCombatState.TurnNumber > turn, "native next turn");
         Check(CombatManager.Instance.IsInProgress, "native enemy and next-turn phases completed");
-    }
-
-    private static string Fingerprint(RunState run)
-    {
-        var writer = new PacketWriter();
-        writer.Write(NetFullCombatState.FromRun(run, null));
-        foreach (var player in run.Players) writer.Write(player.PlayerRng.ToSerializable());
-        writer.ZeroByteRemainder();
-        return Convert.ToHexString(SHA256.HashData(writer.Buffer.AsSpan(0, writer.BytePosition)));
     }
 
     private static async Task Until(Func<bool> ready, string stage)

@@ -42,6 +42,7 @@ if (interrupted.StopReason != "cancelled" || interrupted.Path is not [1] || inte
     throw new InvalidOperationException("Cancellation discarded a completed solution.");
 Console.WriteLine("PASS cancellation preserves the best completed route");
 await ReplayTests.Run();
+SelectionTests.Run();
 
 if (args.Contains("--benchmark"))
 {
