@@ -175,6 +175,7 @@ internal static class NativeRegressions
         Require(health.Plan is { Steps.Length: > 0 }, "health planner finds a complete winning route");
         Require(health.Plan!.FinalHp >= baseline.Plan.FinalHp, "health optimization preserves the best final HP");
         Require(health.Plan!.Steps.All(step => (step.Action & 0xc0000000) != NativeCombat.Potion), "health planner does not use potions");
+        object registry = await RegistryRegressions.Run(combat, original);
         await combat.DisposeAsync();
         Reject<ObjectDisposedException>(() => _ = combat.Actions(run));
         GD.Print($"[cvpp] REGRESSIONS {compared} reference states, {worker.Search.Stats.Evaluated} two-turn nodes");
@@ -183,6 +184,7 @@ internal static class NativeRegressions
             compared_states = compared,
             search = worker,
             terminal,
+            registry,
             baseline_hp = baseline.Plan.FinalHp,
             health,
             cache = new { uncachedActions = uncached.Actions, cachedActions = cached.Actions, simulations = cached.Stats.Simulations },

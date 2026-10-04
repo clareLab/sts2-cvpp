@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
@@ -6,6 +7,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
@@ -109,11 +111,19 @@ internal sealed class NativeCombat : IAsyncDisposable
             CombatManager.Instance.CombatWon -= Won;
             if (_executor != null) _executor.AfterActionExecuted -= AfterAction;
             _executor = null;
-            if (!_live && Manager.IsInProgress) Manager.CleanUp();
+            if (!_live && Manager.IsInProgress)
+            {
+                ReleaseCardSubscriptions(NetCombatCardDb.Instance, Manager.DebugOnlyGetState()?.CurrentRoom as CombatRoom);
+                try { Manager.CleanUp(); }
+                finally { NetCombatCardDb.Instance.ClearCardsForTesting(); }
+            }
             _failure = null;
             Victory = false;
         }
     }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "OnCombatEnded")]
+    private static extern void ReleaseCardSubscriptions(NetCombatCardDb database, CombatRoom? room);
 
     internal async ValueTask Reset()
     {

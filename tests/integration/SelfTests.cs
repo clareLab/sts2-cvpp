@@ -59,7 +59,12 @@ internal static class SelfTests
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
             string continueSave = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
-            if (OS.GetCmdlineArgs().Contains("--cvpp-worker-benchmark"))
+            if (OS.GetCmdlineArgs().Contains("--cvpp-snapshot-probe"))
+            {
+                benchmark = await SnapshotProbe.Run();
+                Check(true, "experimental native snapshot differential probe");
+            }
+            else if (OS.GetCmdlineArgs().Contains("--cvpp-worker-benchmark"))
             {
                 benchmark = await WorkerBenchmarks.Run(continueSave);
                 Check(true, "cold and warm worker benchmark with live route verification");

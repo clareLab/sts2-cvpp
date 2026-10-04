@@ -1,9 +1,9 @@
 [workspace]
-members = ["core", "worker"]
+members = ["core", "worker", "tests/snapshot"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 rust-version = "1.85"
 authors = ["clareLab <yaho@clareLab.moe>"]

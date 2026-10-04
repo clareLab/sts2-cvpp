@@ -61,6 +61,7 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("data", type=Path)
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--snapshot-probe", action="store_true")
     parser.add_argument("--ui", action="store_true")
     parser.add_argument("--mod", type=Path, action="append", default=[])
     parser.add_argument("--replay", type=Path)
@@ -70,6 +71,19 @@ def main():
     parser.add_argument("--fixed-work", action="store_true")
     parser.add_argument("--exit", choices=["startup", "search", "normal", "menu"])
     args = parser.parse_args()
+    if args.snapshot_probe and any(
+        (
+            args.ui,
+            args.benchmark,
+            args.worker_benchmark,
+            args.product_only,
+            args.exit,
+            args.mod,
+            args.save,
+            args.replay,
+        )
+    ):
+        parser.error("--snapshot-probe requires an isolated vanilla headless test")
     if args.worker_benchmark and (not args.save or args.ui or args.benchmark or args.exit):
         parser.error("--worker-benchmark requires --save and headless mode")
     if args.fixed_work and not args.worker_benchmark:
@@ -78,6 +92,8 @@ def main():
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
     if args.worker_benchmark:
         name = "worker-benchmark"
+    if args.snapshot_probe:
+        name = "snapshot-probe"
     if args.exit:
         name = "exit-" + args.exit
     if args.mod:
@@ -146,6 +162,8 @@ def main():
         ]
         if args.benchmark:
             command.append("--cvpp-benchmark")
+        if args.snapshot_probe:
+            command.append("--cvpp-snapshot-probe")
         if args.worker_benchmark:
             command.append("--cvpp-worker-benchmark")
         if args.fixed_work:

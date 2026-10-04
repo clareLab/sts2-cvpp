@@ -15,5 +15,6 @@
     <MakeDir Directories="$(ArtifactsPath)/dist/cvpp" />
     <Copy Condition="$([MSBuild]::IsOSPlatform('Linux'))" SourceFiles="$(MSBuildProjectDirectory)/../artifacts/cargo/release/cvpp-worker" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
     <Copy SourceFiles="$(TargetPath);$(NativeCorePath);$(MSBuildProjectDirectory)/cvpp.json;$(MSBuildProjectDirectory)/../LICENSE" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
+    <Copy Condition="'$(CvppSelfTest)' == 'true'" SourceFiles="$([System.String]::Copy('$(NativeCorePath)').Replace('cvpp_core', 'cvpp_snapshot_probe'))" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
   </Target>
 </Project>

@@ -5,6 +5,7 @@ source scripts/common.sh
 cvpp_mode=()
 if [[ "${1:-}" == '--benchmark' ]]; then cvpp_mode=(--benchmark); shift; fi
 if [[ "${1:-}" == '--ui' ]]; then cvpp_mode=(--ui); shift; fi
+if [[ "${1:-}" == '--snapshot-probe' ]]; then cvpp_mode=(--snapshot-probe); shift; fi
 cvpp_game_paths "${1:-}"
 cargo build --workspace --release --locked
 cvpp_dotnet build src/cvpp.csproj -c Release "-p:Sts2DataDir=$data_dir" -p:CvppSelfTest=true "-p:ArtifactsPath=$PWD/artifacts/integration"
