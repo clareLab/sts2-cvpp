@@ -194,6 +194,7 @@ internal static class ProductTests
     {
         SolverHud.Tick();
         for (int frame = 0; frame < 3; frame++) await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
+        HudTests.StatusAlignment();
         RenderingServer.RenderLoopEnabled = true;
         await Tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
         using var image = Tree.Root.GetTexture().GetImage();

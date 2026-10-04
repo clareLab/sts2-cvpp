@@ -111,26 +111,27 @@ internal static class SolverHud
         _status.ClipText = true;
         _status.MouseFilter = Control.MouseFilterEnum.Pass;
         _score = Ui.Text("—", 18);
+        _score.Name = "CvppHp";
         _score.TooltipText = "Final HP";
         summary.AddChild(Metric(Ui.Heart, _score));
         _stats = Ui.Text("—", 18);
+        _stats.Name = "CvppElapsed";
         _stats.TooltipText = "Search time";
         _stats.MouseFilter = Control.MouseFilterEnum.Pass;
         summary.AddChild(Metric(Ui.Timer, _stats));
         summary.AddChild(_status);
         _explored = Ui.Text("0", 18);
         _explored.Name = "CvppExplored";
-        _explored.CustomMinimumSize = new Vector2(96, 0);
         _explored.TooltipText = "Explored routes";
         _explored.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(_explored);
+        summary.AddChild(Metric(null, _explored));
         _speed = Ui.Text("0/s", 18);
         _speed.Name = "CvppSpeed";
-        _speed.CustomMinimumSize = new Vector2(96, 0);
         _speed.TooltipText = "Simulations per second";
         _speed.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(_speed);
+        summary.AddChild(Metric(null, _speed));
         _memory = Ui.Text("—", 18);
+        _memory.Name = "CvppMemory";
         _memory.TooltipText = "Memory";
         _memory.MouseFilter = Control.MouseFilterEnum.Pass;
         _memory.AddThemeColorOverride("font_color", Ui.Muted);
@@ -180,11 +181,11 @@ internal static class SolverHud
         options.AddChild(_memoryBudget.Root);
     }
 
-    private static HBoxContainer Metric(string icon, Label value)
+    private static HBoxContainer Metric(string? icon, Label value)
     {
-        var metric = new HBoxContainer();
+        var metric = new HBoxContainer { CustomMinimumSize = new Vector2(96, 0) };
         metric.AddThemeConstantOverride("separation", 4);
-        metric.AddChild(Ui.Image(icon, 16));
+        metric.AddChild(icon == null ? new Control { CustomMinimumSize = new Vector2(16, 0), MouseFilter = Control.MouseFilterEnum.Ignore } : Ui.Image(icon, 16));
         metric.AddChild(value);
         return metric;
     }

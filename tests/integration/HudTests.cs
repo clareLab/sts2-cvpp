@@ -8,6 +8,28 @@ internal static class HudTests
     private static SceneTree Scene => (SceneTree)Engine.GetMainLoop();
     private static T Node<T>(string name) where T : Node => (T)Scene.Root.FindChild(name, true, false);
 
+    internal static void StatusAlignment()
+    {
+        var hp = Node<Label>("CvppHp");
+        var elapsed = Node<Label>("CvppElapsed");
+        var status = Node<Label>("CvppStatus");
+        var explored = Node<Label>("CvppExplored");
+        var speed = Node<Label>("CvppSpeed");
+        var memory = Node<Label>("CvppMemory");
+        float Baseline(Label label)
+        {
+            var font = label.GetThemeFont("font");
+            int size = label.GetThemeFontSize("font_size");
+            return label.GlobalPosition.Y + (label.Size.Y - font.GetHeight(size)) / 2 + font.GetAscent(size);
+        }
+        if (Math.Abs(hp.GlobalPosition.X - explored.GlobalPosition.X) > .5f
+            || Math.Abs(elapsed.GlobalPosition.X - speed.GlobalPosition.X) > .5f
+            || Math.Abs(status.GetGlobalRect().End.X - memory.GetGlobalRect().End.X) > .5f
+            || Math.Abs(Baseline(hp) - Baseline(elapsed)) > .5f || Math.Abs(Baseline(hp) - Baseline(status)) > .5f
+            || Math.Abs(Baseline(explored) - Baseline(speed)) > .5f || Math.Abs(Baseline(explored) - Baseline(memory)) > .5f)
+            throw new InvalidOperationException("Status numbers, right edges or text baselines are misaligned.");
+    }
+
     internal static async Task Run()
     {
         var time = Node<LineEdit>("CvppTimeCustom");
@@ -86,6 +108,18 @@ internal static class HudTests
         SolverHud.Close();
         if (!Node<Control>("CvppSummary").IsVisibleInTree() || Node<Label>("CvppStatus").Text != "Time limit")
             throw new InvalidOperationException("Search status is hidden with route details closed.");
+        var explored = Node<Label>("CvppExplored");
+        var speed = Node<Label>("CvppSpeed");
+        string countText = explored.Text;
+        string speedText = speed.Text;
+        Vector2 toolbarSize = toolbar.Size;
+        explored.Text = "23,020";
+        speed.Text = "1,240/s";
+        for (int frame = 0; frame < 3; frame++) await Scene.ToSignal(Scene, SceneTree.SignalName.ProcessFrame);
+        StatusAlignment();
+        if (toolbar.Size != toolbarSize) throw new InvalidOperationException("Grouped counters changed the toolbar size.");
+        explored.Text = countText;
+        speed.Text = speedText;
         Node<Button>("CvppSettings").EmitSignal(BaseButton.SignalName.Pressed);
     }
 }
