@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Sts2Dir Condition="'$(Sts2Dir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/Slay the Spire 2</Sts2Dir>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Dir)/data_sts2_linuxbsd_x86_64</Sts2DataDir>
+    <DefineConstants Condition="'$(CvppSelfTest)' == 'true'">$(DefineConstants);CVPP_SELFTEST</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="sts2"><HintPath>$(Sts2DataDir)/sts2.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="GodotSharp"><HintPath>$(Sts2DataDir)/GodotSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony" Condition="'$(CvppSelfTest)' == 'true'"><HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Compile Include="../tests/integration/*.cs" Link="%(Filename)%(Extension)" Condition="'$(CvppSelfTest)' == 'true'" />
+  </ItemGroup>
+  <Target Name="Package" AfterTargets="Build">
+    <MakeDir Directories="$(ArtifactsPath)/dist/cvpp" />
+    <Copy SourceFiles="$(TargetPath);$(NativeCorePath);$(MSBuildProjectDirectory)/cvpp.json" DestinationFolder="$(ArtifactsPath)/dist/cvpp" />
+  </Target>
+</Project>

@@ -1,0 +1,12 @@
+{
+  "id": "cvpp",
+  "name": "Combat Solver ++",
+  "author": "clareLab",
+  "description": "Deterministic combat search with a Rust core.",
+  "version": "0.1.0",
+  "min_game_version": "0.111.0",
+  "has_dll": true,
+  "has_pck": false,
+  "affects_gameplay": true,
+  "dependencies": []
+}

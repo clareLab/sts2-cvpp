@@ -1,0 +1,9 @@
+artifacts/
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+__pycache__/
+.ruff_cache/

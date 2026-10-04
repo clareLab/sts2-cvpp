@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/NativeCore.cs" Link="NativeCore.cs" />
+    <Compile Include="../../src/NativeSearch.cs" Link="NativeSearch.cs" />
+    <Compile Include="../../src/SearchDriver.cs" Link="SearchDriver.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,29 @@
+<Project>
+  <PropertyGroup>
+    <Authors>clareLab</Authors>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>13</LangVersion>
+    <Version>0.1.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>9.0</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(MSBuildThisFileDirectory)artifacts</ArtifactsPath>
+    <NativeCoreName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libcvpp_core.so</NativeCoreName>
+    <NativeCoreName Condition="$([MSBuild]::IsOSPlatform('Windows'))">cvpp_core.dll</NativeCoreName>
+    <NativeCoreName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libcvpp_core.dylib</NativeCoreName>
+    <NativeCorePath>$(MSBuildThisFileDirectory)artifacts/cargo/release/$(NativeCoreName)</NativeCorePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(NativeCorePath)" Link="$(NativeCoreName)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CheckNativeCore" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(NativeCoreName)' == ''" Text="Unsupported native platform." />
+    <Error Condition="!Exists('$(NativeCorePath)')" Text="Build the Rust core with cargo build --release --locked --target-dir artifacts/cargo first." />
+  </Target>
+</Project>
