@@ -39,6 +39,7 @@ internal sealed class NativeCombat : IAsyncDisposable
     private IDisposable? _selector;
     private ActionExecutor? _executor;
     private Exception? _failure;
+    private bool _ended;
     private readonly bool _live;
 
     internal CombatExecution Mode { get; set; } = CombatExecution.Reference;
@@ -65,6 +66,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             _selector = CardSelectCmd.PushSelector(_choices, localOnly: true);
             (_executor = Manager.ActionExecutor).AfterActionExecuted += AfterAction;
             CombatManager.Instance.CombatWon += Won;
+            CombatManager.Instance.CombatEnded += Ended;
         }
     }
 
@@ -92,6 +94,7 @@ internal sealed class NativeCombat : IAsyncDisposable
 
     private void AfterAction(GameAction action) => _failure ??= action.Exception;
     private void Won(CombatRoom room) => Victory = true;
+    private void Ended(CombatRoom room) => _ended = true;
 
     private async ValueTask CleanUp()
     {
@@ -109,6 +112,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             _selector?.Dispose();
             _selector = null;
             CombatManager.Instance.CombatWon -= Won;
+            CombatManager.Instance.CombatEnded -= Ended;
             if (_executor != null) _executor.AfterActionExecuted -= AfterAction;
             _executor = null;
             if (!_live && Manager.IsInProgress)
@@ -119,6 +123,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             }
             _failure = null;
             Victory = false;
+            _ended = false;
         }
     }
 
@@ -332,6 +337,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         _selector = CardSelectCmd.PushSelector(_choices, localOnly: true);
         (_executor = Manager.ActionExecutor).AfterActionExecuted += AfterAction;
         CombatManager.Instance.CombatWon += Won;
+        CombatManager.Instance.CombatEnded += Ended;
         if (Mode == CombatExecution.Worker)
         {
             Manager.CombatReplayWriter.IsEnabled = false;
@@ -378,7 +384,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         return new CombatCheckpoint(replay);
     }
 
-    internal bool Finished => !CombatManager.Instance.IsInProgress && !Manager.ActionExecutor.IsRunning
+    internal bool Finished => _ended && !Manager.ActionExecutor.IsRunning
         && Manager.ActionQueueSet.IsEmpty;
 
     internal bool Stable(RunState run) => !HasChoice && IsStable(run);

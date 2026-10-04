@@ -68,6 +68,7 @@ def main():
     parser.add_argument("--save", type=Path)
     parser.add_argument("--product-only", action="store_true")
     parser.add_argument("--worker-benchmark", action="store_true")
+    parser.add_argument("--snapshot-worker", action="store_true")
     parser.add_argument("--fixed-work", action="store_true")
     parser.add_argument("--exit", choices=["startup", "search", "paused", "normal", "menu"])
     args = parser.parse_args()
@@ -84,14 +85,18 @@ def main():
         )
     ):
         parser.error("--snapshot-probe requires an isolated vanilla headless test")
-    if args.worker_benchmark and (not args.save or args.ui or args.benchmark or args.exit):
-        parser.error("--worker-benchmark requires --save and headless mode")
+    if args.worker_benchmark and (args.ui or args.benchmark or args.exit):
+        parser.error("--worker-benchmark requires headless mode")
+    if args.snapshot_worker and (not args.worker_benchmark or args.mod):
+        parser.error("--snapshot-worker requires an isolated vanilla worker benchmark")
     if args.fixed_work and not args.worker_benchmark:
         parser.error("--fixed-work requires --worker-benchmark")
     source, data = args.source.resolve(), args.data.resolve()
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
     if args.worker_benchmark:
         name = "worker-benchmark"
+        if args.snapshot_worker:
+            name += "-snapshot"
     if args.snapshot_probe:
         name = "snapshot-probe"
     if args.exit:
@@ -185,6 +190,9 @@ def main():
             "LP_NUM_THREADS": "1",
             "DOTNET_PROCESSOR_COUNT": "2",
         }
+        environment.pop("CVPP_SNAPSHOT_PROBE", None)
+        if args.snapshot_worker:
+            environment["CVPP_SNAPSHOT_PROBE"] = "1"
         with (results / f"{name}.log").open("w") as log:
             process = subprocess.Popen(
                 command,

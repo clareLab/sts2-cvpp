@@ -4,6 +4,7 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Settings;
 
@@ -121,7 +122,13 @@ internal static class WorkerHost
                     try
                     {
                         var checkpoint = CombatCheckpoint.Import(message.Request.Position.Root);
-                        var result = await HealthSearch.Run(combat, () => message.Request.Position.Restore(combat, checkpoint), message.Request.Options,
+                        Func<ValueTask<RunState>> restore = () => message.Request.Position.Restore(combat, checkpoint);
+#if CVPP_SELFTEST
+                        using var snapshot = System.Environment.GetEnvironmentVariable("CVPP_SNAPSHOT_PROBE") == "1"
+                            ? new SnapshotSearch(combat, restore) : null;
+                        if (snapshot != null) restore = snapshot.Restore;
+#endif
+                        var result = await HealthSearch.Run(combat, restore, message.Request.Options,
                             progress =>
                             {
                                 Engine.MaxFps = progress.Paused ? 10 : 0;

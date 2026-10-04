@@ -178,18 +178,49 @@ internal static class NativeRegressions
         object registry = await RegistryRegressions.Run(combat, original);
         await combat.DisposeAsync();
         Reject<ObjectDisposedException>(() => _ = combat.Actions(run));
+        object delayedVictory = await DelayedVictory();
         GD.Print($"[cvpp] REGRESSIONS {compared} reference states, {worker.Search.Stats.Evaluated} two-turn nodes");
         return new
         {
             compared_states = compared,
             search = worker,
             terminal,
+            delayedVictory,
             registry,
             baseline_hp = baseline.Plan.FinalHp,
             health,
             cache = new { uncachedActions = uncached.Actions, cachedActions = cached.Actions, simulations = cached.Stats.Simulations },
             checkpoint_bytes = checkpoint.Length
         };
+    }
+
+    private static async Task<object> DelayedVictory()
+    {
+        await using var combat = new NativeCombat();
+        var character = ModelDb.AllCharacters.Single(model => model.Id.Entry == "DEFECT");
+        SaveManager.Instance.Progress.GetOrCreateCharacterStats(character.Id).TotalLosses = 2;
+        var run = await NGame.Instance!.StartNewSingleplayerRun(character, true,
+            ActModel.GetDefaultList(), [], "CVPP-NATIVE-002", GameMode.Standard);
+        var point = run.Map.GetAllMapPoints().Where(p => p.PointType == MapPointType.Monster)
+            .OrderBy(p => p.coord.row).ThenBy(p => p.coord.col).First();
+        await RunManager.Instance.EnterMapCoord(point.coord);
+        await combat.Until(() => combat.Stable(run), "delayed victory fixture");
+        var checkpoint = await combat.CaptureRoomStart();
+        combat.Mode = CombatExecution.Worker;
+        var result = await HealthSearch.Run(combat, () => combat.Restore(checkpoint), new SolveOptions(0, 128, 96));
+        var plan = result.Plan ?? throw new InvalidOperationException("Delayed victory fixture has no winning route.");
+        Require(plan.Steps[^1].Action == NativeCombat.EndTurn, "delayed victory fixture ends with an orb trigger");
+        combat.Mode = CombatExecution.Reference;
+        run = await combat.Restore(checkpoint);
+        foreach (var step in plan.Steps)
+        {
+            Require(combat.Fingerprint(run) == step.Before, "delayed victory route before action");
+            await combat.Execute(run, step.Action);
+            if (!combat.Finished) Require(combat.Fingerprint(run) == step.After, "delayed victory route after action");
+        }
+        Require(combat.Finished && combat.Victory && run.Players[0].Creature.CurrentHp == plan.FinalHp,
+            "end-turn victory waits for official completion");
+        return new { character = character.Id.Entry, plan.FinalHp, last_action = plan.Steps[^1].Label };
     }
 
     private static SerializableCard Card<T>(int upgrade = 0) where T : CardModel => new()

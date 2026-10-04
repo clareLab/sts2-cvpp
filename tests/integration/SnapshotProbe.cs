@@ -22,6 +22,7 @@ internal static class SnapshotProbe
         if (ModManager.GetLoadedMods().Any(mod => mod.manifest?.id != "cvpp"))
             throw new NotSupportedException("The snapshot probe currently requires vanilla gameplay.");
         Engine.MaxFps = 0;
+        object codec = SnapshotCodecTests.Run();
         await using var combat = new NativeCombat();
         var character = ModelDb.AllCharacters.Single(c => c.Id.Entry == "SILENT");
         SaveManager.Instance.Progress.GetOrCreateCharacterStats(character.Id).TotalLosses = 2;
@@ -107,9 +108,16 @@ internal static class SnapshotProbe
         await ((SceneTree)Engine.GetMainLoop()).ToSignal((SceneTree)Engine.GetMainLoop(), SceneTree.SignalName.ProcessFrame);
         object registry = await RegistryRegressions.Run(combat, checkpoint);
         object corpus = await Corpus(combat);
+        object search = await SnapshotSearchBenchmarks.Run(combat, checkpoint);
+        object midCombatSearch = await SnapshotSearchBenchmarks.Run(combat, checkpoint,
+            [NativeCombat.EndTurn, NativeCombat.EndTurn, NativeCombat.EndTurn]);
+        object searchLifecycle = await SnapshotSearchBenchmarks.Lifecycle(combat, checkpoint);
+        object captureEncoding = await SnapshotSearchBenchmarks.Capture(combat, checkpoint);
+        object searchRegistry = await RegistryRegressions.Run(combat, checkpoint);
         var report = new
         {
             capture_ms = captureMs,
+            codec,
             objects,
             references,
             native_bytes = snapshot.Graph.Bytes,
@@ -123,6 +131,11 @@ internal static class SnapshotProbe
             terminal,
             registry,
             corpus,
+            search,
+            midCombatSearch,
+            searchLifecycle,
+            captureEncoding,
+            searchRegistry,
             game_mvid = typeof(RunState).Assembly.ManifestModule.ModuleVersionId,
             checkpoint = checkpoint.Digest,
             scope = "isolated vanilla stable snapshots with terminal rollback and choice replay; prototype only"
@@ -172,7 +185,8 @@ internal static class SnapshotProbe
                 await combat.Execute(run, path[step]);
                 Require(combat.Fingerprint(run) == expected[step], "character official reference trajectory");
             }
-            cases.Add(new { character = character.Id.Entry, checkpoint = checkpoint.Digest, compared_states = 15 });
+            object search = await SnapshotSearchBenchmarks.Run(combat, checkpoint);
+            cases.Add(new { character = character.Id.Entry, checkpoint = checkpoint.Digest, compared_states = 15, search });
         }
         return cases;
     }

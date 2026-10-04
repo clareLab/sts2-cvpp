@@ -26,7 +26,7 @@ internal sealed class SnapshotLoop : IDisposable
 
     internal SnapshotGraph Graph => _graph;
 
-    internal SnapshotLoop(NativeCombat combat, RunState run, SnapshotLoop? parent = null)
+    internal SnapshotLoop(NativeCombat combat, RunState run, SnapshotLoop? parent = null, bool compiled = true)
     {
         if (combat.Mode != CombatExecution.Worker || !combat.Stable(run))
             throw new InvalidOperationException("Snapshot requires an idle worker decision.");
@@ -36,7 +36,7 @@ internal sealed class SnapshotLoop : IDisposable
         _turn = Turn.GetValue(CombatManager.Instance)!;
         var manager = RunManager.Instance;
         _winTime = manager.WinTime;
-        _graph = new SnapshotGraph(parent?._graph, run, CombatManager.Instance, manager.ActionQueueSet,
+        _graph = new SnapshotGraph(parent?._graph, compiled, run, CombatManager.Instance, manager.ActionQueueSet,
             manager.ActionQueueSynchronizer, manager.PlayerChoiceSynchronizer, manager.ActionExecutor, NetCombatCardDb.Instance,
             SaveManager.Instance.Progress);
         if (_graph.Runs.Length != 1)
@@ -69,6 +69,7 @@ internal sealed class SnapshotLoop : IDisposable
         cancellation.Dispose();
         _graph.Restore();
         Victory(combat) = false;
+        Ended(combat) = false;
         RunManager.Instance.WinTime = _winTime;
         Cancellation.SetValue(_turn, new CancellationTokenSource());
         foreach (string name in new[] { "EndTurnSignalSource", "BeginEnemyTurnSignalSource" })
@@ -88,6 +89,9 @@ internal sealed class SnapshotLoop : IDisposable
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Victory>k__BackingField")]
     private static extern ref bool Victory(NativeCombat combat);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_ended")]
+    private static extern ref bool Ended(NativeCombat combat);
 
     private static async Task Resume(object turn)
     {

@@ -12,6 +12,7 @@ internal sealed class SnapshotGraph : IDisposable
     private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
     private static readonly Dictionary<Type, FieldInfo[]> Layouts = [];
     private static readonly Dictionary<Type, Action<object, ulong[], int, object?[]>> Decoders = [];
+    private static readonly Dictionary<Type, Action<SnapshotGraph, object>> Encoders = [];
     private static readonly HashSet<string> RuntimeFields = [];
     private static readonly HashSet<string> KnownRuntimeFields =
     [
@@ -52,7 +53,9 @@ internal sealed class SnapshotGraph : IDisposable
         .OrderByDescending(group => group.Count()).Take(20).Select(group => (object)new { type = group.Key, count = group.Count() }).ToArray();
     internal string[] Runs => _entries.Where(entry => entry.Target is RunState).Select(entry => Origin(entry.Target)).ToArray();
 
-    internal SnapshotGraph(SnapshotGraph? parent, params object[] roots)
+    internal SnapshotGraph(SnapshotGraph? parent, params object[] roots) : this(parent, true, roots) { }
+
+    internal SnapshotGraph(SnapshotGraph? parent, bool compiled, params object[] roots)
     {
         foreach (object root in roots) Reference(root);
         for (int index = 0; index < _pending.Count; index++)
@@ -63,20 +66,25 @@ internal sealed class SnapshotGraph : IDisposable
             _visiting = target;
             _member = "[]";
             int start = _words.Count;
-            if (target is Array array)
+            Type type = target.GetType();
+            if (target is Array array && (!compiled || !type.IsSZArray))
             {
                 Type element = target.GetType().GetElementType()!;
                 foreach (object? item in array) Write(element, item);
             }
+            else if (compiled)
+            {
+                if (!Encoders.TryGetValue(type, out var encoder)) Encoders[type] = encoder = SnapshotEncoder.Compile(type);
+                encoder(this, target);
+            }
             else
-                foreach (FieldInfo field in Layout(target.GetType()))
+                foreach (FieldInfo field in Layout(type))
                 {
                     _member = field.Name;
                     Write(field.FieldType, field.GetValue(target));
                 }
-            Type type = target.GetType();
             Action<object, ulong[], int, object?[]>? decoder = null;
-            if (!type.IsArray || type.GetArrayRank() == 1)
+            if (!type.IsArray || type.IsSZArray)
             {
                 if (!Decoders.TryGetValue(type, out decoder)) Decoders[type] = decoder = SnapshotDecoder.Compile(type);
             }
@@ -89,6 +97,23 @@ internal sealed class SnapshotGraph : IDisposable
         _words.TrimExcess();
         _pending.Clear();
         _visiting = null;
+    }
+
+    internal void Member(string name) => _member = name;
+
+    internal void Word(ulong value)
+    {
+        if (_words.Count >= 1_000_000) throw new NotSupportedException("Snapshot data budget exceeded.");
+        _words.Add(value);
+    }
+
+    internal void WriteReference(object? value) => Word(checked((ulong)Reference(value)));
+
+    internal ulong[] Words()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _native.Restore(_buffer);
+        return (ulong[])_buffer.Clone();
     }
 
     internal void Restore()

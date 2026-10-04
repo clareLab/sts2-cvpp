@@ -97,6 +97,9 @@ internal static class HealthSearch
                 best = buffer[..steps];
                 changed = true;
             }
+#if CVPP_SELFTEST
+            SearchTrace.Observe(buffer.AsSpan(0, steps), length, hp, terminal, actions);
+#endif
             planner.Observe(hp < 0 ? 0 : checked(hp + 1), terminal, actions);
             if (plan == null && changed || timer.ElapsedMilliseconds - lastProgress >= 250) await Publish();
         }

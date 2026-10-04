@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Godot;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -16,10 +18,23 @@ internal static class WorkerBenchmarks
 
     internal static async Task<object> Run(string path)
     {
-        var save = JsonSerializer.Deserialize(File.ReadAllText(path), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
-        var run = RunState.FromSerializable(save);
-        await RunManager.Instance.SetUpSavedSingleplayer(run, save);
-        await NGame.Instance!.LoadRun(run, save.PreFinishedRoom);
+        RunState run;
+        if (File.Exists(path))
+        {
+            var save = JsonSerializer.Deserialize(File.ReadAllText(path), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
+            run = RunState.FromSerializable(save);
+            await RunManager.Instance.SetUpSavedSingleplayer(run, save);
+            await NGame.Instance!.LoadRun(run, save.PreFinishedRoom);
+        }
+        else
+        {
+            var character = ModelDb.AllCharacters.Single(model => model.Id.Entry == "SILENT");
+            SaveManager.Instance.Progress.GetOrCreateCharacterStats(character.Id).TotalLosses = 2;
+            run = await NGame.Instance!.StartNewSingleplayerRun(character, true, ActModel.GetDefaultList(), [], "CVPP-WORKER-001", GameMode.Standard);
+            var point = run.Map.GetAllMapPoints().Where(p => p.PointType == MapPointType.Monster)
+                .OrderBy(p => p.coord.row).ThenBy(p => p.coord.col).First();
+            await RunManager.Instance.EnterMapCoord(point.coord);
+        }
         await ProductTests.Until(() => SolverController.Ready && !NGame.Instance.Transition.InTransition, "benchmark combat");
         var position = await CombatPosition.Capture();
         var setup = WorkerEnvironment.Capture();
@@ -91,6 +106,15 @@ internal static class WorkerBenchmarks
         if (saved.Count != Directory.GetFiles(saveDirectory, "*.save").Length
             || saved.Any(entry => !File.ReadAllBytes(entry.Key).AsSpan().SequenceEqual(entry.Value)))
             throw new InvalidOperationException("Headless replay wrote run or progress saves.");
-        return new { mods = setup.Mods.Select(mod => mod.Id).ToArray(), options, trials, samples, verified = true, savesUnchanged = true };
+        return new
+        {
+            mods = setup.Mods.Select(mod => mod.Id).ToArray(),
+            options,
+            trials,
+            samples,
+            verified = true,
+            savesUnchanged = true,
+            snapshot = System.Environment.GetEnvironmentVariable("CVPP_SNAPSHOT_PROBE") == "1"
+        };
     }
 }
