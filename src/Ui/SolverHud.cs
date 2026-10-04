@@ -61,7 +61,7 @@ internal static class SolverHud
         _toolbar = new PanelContainer { Name = "CvppToolbar", Theme = Ui.Theme };
         _layer.AddChild(_toolbar);
         var column = new VBoxContainer();
-        column.AddThemeConstantOverride("separation", 4);
+        column.AddThemeConstantOverride("separation", 8);
         var padding = Ui.Padding(_toolbar, 6);
         padding.AddThemeConstantOverride("margin_top", 4);
         padding.AddThemeConstantOverride("margin_bottom", 4);
@@ -124,12 +124,12 @@ internal static class SolverHud
         _explored.Name = "CvppExplored";
         _explored.TooltipText = "Explored routes";
         _explored.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(Metric(null, _explored));
+        summary.AddChild(Metric(Ui.Explored, _explored));
         _speed = Ui.Text("0/s", 18);
         _speed.Name = "CvppSpeed";
         _speed.TooltipText = "Simulations per second";
         _speed.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(Metric(null, _speed));
+        summary.AddChild(Metric(Ui.Speed, _speed));
         _memory = Ui.Text("—", 18);
         _memory.Name = "CvppMemory";
         _memory.TooltipText = "Memory";
@@ -181,11 +181,13 @@ internal static class SolverHud
         options.AddChild(_memoryBudget.Root);
     }
 
-    private static HBoxContainer Metric(string? icon, Label value)
+    private static HBoxContainer Metric(string icon, Label value) => Metric(Ui.Texture(icon), value);
+
+    private static HBoxContainer Metric(Texture2D icon, Label value)
     {
-        var metric = new HBoxContainer { CustomMinimumSize = new Vector2(96, 0) };
+        var metric = new HBoxContainer { CustomMinimumSize = new Vector2(96, 0), TooltipText = value.TooltipText, MouseFilter = Control.MouseFilterEnum.Pass };
         metric.AddThemeConstantOverride("separation", 4);
-        metric.AddChild(icon == null ? new Control { CustomMinimumSize = new Vector2(16, 0), MouseFilter = Control.MouseFilterEnum.Ignore } : Ui.Image(icon, 16));
+        metric.AddChild(Ui.Image(icon, 16));
         metric.AddChild(value);
         return metric;
     }

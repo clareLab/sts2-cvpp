@@ -12,6 +12,7 @@ internal static class Ui
     internal const string Settings = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_settings.tres";
     internal const string Heart = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_heart.tres";
     internal const string Timer = "res://images/atlases/ui_atlas.sprites/top_bar/timer_icon.tres";
+    internal const string Explored = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_map.tres";
     internal const string Card = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_deck.tres";
     internal const string Choice = "res://images/atlases/ui_atlas.sprites/checkbox_ticked.tres";
     internal static readonly Color Muted = new("83918d");
@@ -21,9 +22,11 @@ internal static class Ui
     private static Theme? _theme;
     private static Texture2D? _pause;
     private static Texture2D? _reset;
+    private static Texture2D? _speed;
     internal static Theme Theme => _theme ??= CreateTheme();
     private static Texture2D Pause => _pause ??= Glyph("<path d='M8 5v14M16 5v14' stroke='#eee5cf' stroke-width='4' stroke-linecap='round'/>");
     internal static Texture2D Reset => _reset ??= Glyph("<path d='M4 10a8 8 0 1 1 1 7M4 4v6h6' fill='none' stroke='#eee5cf' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/>");
+    internal static Texture2D Speed => _speed ??= Glyph("<path d='m4 6 7 6-7 6m9-12 7 6-7 6' fill='none' stroke='#eee5cf' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/>");
 
     private static Texture2D Glyph(string content)
     {
@@ -41,7 +44,7 @@ internal static class Ui
 
     internal static TextureRect Image(string path, int size = 24) => Image(Texture(path), size);
 
-    private static TextureRect Image(Texture2D texture, int size = 24) => new()
+    internal static TextureRect Image(Texture2D texture, int size = 24) => new()
     {
         Texture = texture,
         CustomMinimumSize = new Vector2(size, size),
