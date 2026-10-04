@@ -41,8 +41,10 @@ internal static class WorkerBenchmarks
         await using var worker = new WorkerClient(OS.GetExecutablePath(), Path.GetDirectoryName(typeof(Entry).Assembly.Location)!,
             ProjectSettings.GlobalizePath("user://cvpp-workers"), setup);
         var trials = new List<object>();
+        string? nodeArgument = OS.GetCmdlineArgs().SingleOrDefault(argument => argument.StartsWith("--cvpp-nodes=", StringComparison.Ordinal));
+        uint nodes = nodeArgument == null ? 128 : uint.Parse(nodeArgument.AsSpan("--cvpp-nodes=".Length), System.Globalization.CultureInfo.InvariantCulture);
         var options = OS.GetCmdlineArgs().Contains("--cvpp-fixed-work")
-            ? new SolveOptions(0, Nodes: 128, MemoryMiB: 4096) : new SolveOptions(5, MemoryMiB: 4096);
+            ? new SolveOptions(0, Nodes: nodes, MemoryMiB: 4096) : new SolveOptions(5, MemoryMiB: 4096);
         CombatPlan? plan = null;
         for (int trial = 0; trial < 3; trial++)
         {

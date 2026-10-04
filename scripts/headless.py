@@ -60,8 +60,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("data", type=Path)
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--benchmark", action="store_true")
     parser.add_argument("--snapshot-probe", action="store_true")
+    parser.add_argument("--replay-trace", action="store_true")
     parser.add_argument("--ui", action="store_true")
     parser.add_argument("--mod", type=Path, action="append", default=[])
     parser.add_argument("--replay", type=Path)
@@ -69,9 +71,11 @@ def main():
     parser.add_argument("--product-only", action="store_true")
     parser.add_argument("--worker-benchmark", action="store_true")
     parser.add_argument("--snapshot-worker", action="store_true")
-    parser.add_argument("--fixed-work", action="store_true")
+    parser.add_argument("--fixed-work", type=int, nargs="?", const=128)
     parser.add_argument("--exit", choices=["startup", "search", "paused", "normal", "menu"])
     args = parser.parse_args()
+    if args.replay_trace and not args.snapshot_probe:
+        parser.error("--replay-trace requires --snapshot-probe")
     if args.snapshot_probe and any(
         (
             args.ui,
@@ -89,8 +93,10 @@ def main():
         parser.error("--worker-benchmark requires headless mode")
     if args.snapshot_worker and (not args.worker_benchmark or args.mod):
         parser.error("--snapshot-worker requires an isolated vanilla worker benchmark")
-    if args.fixed_work and not args.worker_benchmark:
-        parser.error("--fixed-work requires --worker-benchmark")
+    if args.fixed_work is not None and (
+        not args.worker_benchmark or not 1 <= args.fixed_work <= 1_000_000
+    ):
+        parser.error("--fixed-work requires --worker-benchmark and 1 to 1000000 nodes")
     source, data = args.source.resolve(), args.data.resolve()
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
     if args.worker_benchmark:
@@ -103,7 +109,7 @@ def main():
         name = "exit-" + args.exit
     if args.mod:
         name += "-modded"
-    package = ROOT / "artifacts/integration/dist/cvpp"
+    package = args.package or ROOT / "artifacts/integration/dist/cvpp"
     results = ROOT / "artifacts/validation"
     instances = ROOT / "artifacts/workers"
     results.mkdir(parents=True, exist_ok=True)
@@ -169,10 +175,12 @@ def main():
             command.append("--cvpp-benchmark")
         if args.snapshot_probe:
             command.append("--cvpp-snapshot-probe")
+        if args.replay_trace:
+            command.append("--cvpp-replay-trace")
         if args.worker_benchmark:
             command.append("--cvpp-worker-benchmark")
         if args.fixed_work:
-            command.append("--cvpp-fixed-work")
+            command.extend(["--cvpp-fixed-work", f"--cvpp-nodes={args.fixed_work}"])
         if args.product_only:
             command.append("--cvpp-product-only")
         if args.exit:

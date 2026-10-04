@@ -74,6 +74,7 @@ internal static class SnapshotSearchBenchmarks
             return run;
         }
         var options = new SolveOptions(0, Nodes: 128, Depth: 96);
+        bool replayTracing = OS.GetCmdlineArgs().Contains("--cvpp-replay-trace");
         var trials = new List<object>();
         SolveResult? expected = null;
         string? expectedTrace = null;
@@ -94,6 +95,8 @@ internal static class SnapshotSearchBenchmarks
                 using var root = backend == "snapshot" ? new SnapshotSearch(combat, Restore) : null;
                 Func<ValueTask<RunState>> restore = root == null ? Restore : root.Restore;
                 using var trace = new SearchTrace();
+                using var replay = replayTracing && round == 0 && backend == "root_replay"
+                    ? new ReplayTrace(() => combat.Stable(RunManager.Instance.DebugOnlyGetState()!)) : null;
                 var result = await HealthSearch.Run(combat, restore, options);
                 double wallMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 long bytes = GC.GetTotalAllocatedBytes(true) - allocated;
@@ -127,7 +130,8 @@ internal static class SnapshotSearchBenchmarks
                     capture_ms = root?.CaptureMs ?? 0,
                     snapshot_restore_ms = root?.RestoreMs ?? 0,
                     native_bytes = root?.Bytes ?? 0,
-                    managed_references = root?.References ?? 0
+                    managed_references = root?.References ?? 0,
+                    replay = replay?.Moves
                 };
                 trials.Add(sample);
                 root?.Dispose();
