@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Map;
@@ -33,12 +34,24 @@ internal static class ProductTests
         SolverController.Seconds = 5;
         var timing = Stopwatch.StartNew();
         SolverController.Solve();
+        if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
+        {
+            SolverHud.Tick();
+            if (Tree.Root.FindChild("CvppProgress", true, false) is not ProgressBar { Indeterminate: true }
+                || SolverController.Status != "Loading") throw new InvalidOperationException("Worker startup has no loading feedback.");
+            await Task.Delay(300);
+            await Screenshot("loading");
+        }
         await Until(() => SolverController.Preview != null || !SolverController.Busy, "live preview", 100);
         if (!SolverController.Busy || SolverController.Preview is not { } preview
             || preview.Steps.Sum(action => action.HpDelta) != preview.FinalHp - run.Players[0].Creature.CurrentHp)
             throw new InvalidOperationException("A complete route with HP deltas was not published during search.");
         SolverHud.Tick();
         var toolbar = (Control)Tree.Root.FindChild("CvppToolbar", true, false);
+        if (SolverController.Progress is not { Simulations: > 0 } progress || SolverController.SimulationsPerSecond <= 0
+            || Tree.Root.FindChild("CvppExplored", true, false) is not Label explored
+            || explored.Text != progress.Simulations.ToString("N0", CultureInfo.InvariantCulture))
+            throw new InvalidOperationException("Search throughput is missing from the toolbar.");
         Vector2 searchingSize = toolbar.Size;
         if (Tree.Root.FindChild("CvppSolve", true, false) is not Button { Disabled: false, ButtonPressed: true } solveButton
             || !solveButton.GetNode<TextureRect>("Pause").Visible || solveButton.GetNode<TextureRect>("Icon").Visible)
@@ -61,6 +74,9 @@ internal static class ProductTests
         SolverHud.Tick();
         await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
         if (toolbar.Size != searchingSize) throw new InvalidOperationException("Toolbar size changed when search stopped.");
+        if (SolverController.SimulationsPerSecond != 0 || SolverController.Progress?.Simulations < progress.Simulations
+            || Tree.Root.FindChild("CvppSpeed", true, false) is not Label { Text: "0/s" })
+            throw new InvalidOperationException("Stopped search lost its count or retained an active speed.");
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
         {
             await Screenshot("toolbar");
@@ -155,6 +171,7 @@ internal static class ProductTests
         await Until(() => !SolverController.Busy, "reset completed route", 15);
         if (SolverController.Plan != null || SolverController.Preview != null || SolverController.Progress != null
             || SolverController.Step != 0 || SolverController.Status != "Ready" || SolverController.Elapsed != 0
+            || SolverController.SimulationsPerSecond != 0
             || SolverController.Seconds != seconds || SolverController.MemoryMiB != memory
             || !SolverController.WorkerReleased || CombatFingerprint.Capture(run) != before)
             throw new InvalidOperationException("Reset did not clear results while preserving the live state and settings.");
@@ -181,6 +198,13 @@ internal static class ProductTests
         await Tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
         using var image = Tree.Root.GetTexture().GetImage();
         image.SavePng(ProjectSettings.GlobalizePath("user://cvpp-ui-" + name + ".png"));
+        if (name is "toolbar" or "searching" or "loading")
+        {
+            var bounds = ((Control)Tree.Root.FindChild("CvppToolbar", true, false)).GetGlobalRect();
+            var scale = (Vector2)image.GetSize() / Tree.Root.GetVisibleRect().Size;
+            using var detail = image.GetRegion(new Rect2I((Vector2I)(bounds.Position * scale).Floor(), (Vector2I)(bounds.Size * scale).Ceil()));
+            detail.SavePng(ProjectSettings.GlobalizePath("user://cvpp-ui-" + name + "-detail.png"));
+        }
         RenderingServer.RenderLoopEnabled = false;
     }
 }

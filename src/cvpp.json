@@ -3,7 +3,7 @@
   "name": "Combat Solver ++",
   "author": "clareLab",
   "description": "Plan and execute combat routes.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "min_game_version": "0.111.0",
   "has_dll": true,
   "has_pck": false,

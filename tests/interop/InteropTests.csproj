@@ -11,5 +11,6 @@
     <Compile Include="../../src/NativePlanner.cs" Link="NativePlanner.cs" />
     <Compile Include="../../src/Plan.cs" Link="Plan.cs" />
     <Compile Include="../../src/Protocol.cs" Link="Protocol.cs" />
+    <Compile Include="../../src/Ui/SearchRate.cs" Link="SearchRate.cs" />
   </ItemGroup>
 </Project>

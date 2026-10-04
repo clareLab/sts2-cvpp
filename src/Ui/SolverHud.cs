@@ -1,3 +1,4 @@
+using System.Globalization;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Nodes;
@@ -17,6 +18,8 @@ internal static class SolverHud
     private static Label _score = null!;
     private static Label _stats = null!;
     private static Label _memory = null!;
+    private static Label _explored = null!;
+    private static Label _speed = null!;
     private static Label _empty = null!;
     private static Label _handle = null!;
     private static Button _solve = null!;
@@ -30,9 +33,12 @@ internal static class SolverHud
     private static BudgetEditor _timeBudget = null!;
     private static BudgetEditor _memoryBudget = null!;
     private static CombatPlan? _shown;
+    private static SolveProgress? _shownProgress;
+    private static bool _shownSearching;
     private static int _shownStep = -1;
     private static string? _error;
     private static Color _handleColor;
+    private static Color _statusColor;
     private static bool _dragging;
     private static Vector2 _offset;
     private static Vector2 _view;
@@ -55,8 +61,11 @@ internal static class SolverHud
         _toolbar = new PanelContainer { Name = "CvppToolbar", Theme = Ui.Theme };
         _layer.AddChild(_toolbar);
         var column = new VBoxContainer();
-        column.AddThemeConstantOverride("separation", 6);
-        Ui.Padding(_toolbar, 6).AddChild(column);
+        column.AddThemeConstantOverride("separation", 4);
+        var padding = Ui.Padding(_toolbar, 6);
+        padding.AddThemeConstantOverride("margin_top", 4);
+        padding.AddThemeConstantOverride("margin_bottom", 4);
+        padding.AddChild(column);
         var bar = new HBoxContainer { Name = "CvppCommands" };
         bar.AddThemeConstantOverride("separation", 4);
         column.AddChild(bar);
@@ -89,28 +98,44 @@ internal static class SolverHud
         _settingsButton = Ui.Icon(Ui.Settings, "Settings", "CvppSettings", () => Open(_settings, toggle: true));
         _settingsButton.ToggleMode = true;
         bar.AddChild(_settingsButton);
-        _progress = new ProgressBar { Name = "CvppProgress", ShowPercentage = false, CustomMinimumSize = new Vector2(0, 2), MaxValue = 1 };
-        var summary = new HBoxContainer { Name = "CvppSummary", CustomMinimumSize = new Vector2(0, 22) };
-        summary.AddThemeConstantOverride("separation", 12);
+        _progress = new ProgressBar { Name = "CvppProgress", Theme = Ui.Theme, ShowPercentage = false, CustomMinimumSize = new Vector2(0, 3), MaxValue = 1, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _layer.AddChild(_progress);
+        var summary = new GridContainer { Name = "CvppSummary", Columns = 3 };
+        summary.AddThemeConstantOverride("h_separation", 12);
+        summary.AddThemeConstantOverride("v_separation", 0);
         column.AddChild(summary);
-        _status = Ui.Text("Ready", 16);
+        _status = Ui.Text("Ready", 18);
         _status.Name = "CvppStatus";
-        _status.AddThemeColorOverride("font_color", Ui.Muted);
         _status.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _status.HorizontalAlignment = HorizontalAlignment.Right;
         _status.ClipText = true;
         _status.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(_status);
-        _score = Ui.Text("—", 16);
+        _score = Ui.Text("—", 18);
         _score.TooltipText = "Final HP";
         summary.AddChild(Metric(Ui.Heart, _score));
-        _stats = Ui.Text("0s", 16);
+        _stats = Ui.Text("—", 18);
+        _stats.TooltipText = "Search time";
+        _stats.MouseFilter = Control.MouseFilterEnum.Pass;
         summary.AddChild(Metric(Ui.Timer, _stats));
-        _memory = Ui.Text("—", 16);
+        summary.AddChild(_status);
+        _explored = Ui.Text("0", 18);
+        _explored.Name = "CvppExplored";
+        _explored.CustomMinimumSize = new Vector2(96, 0);
+        _explored.TooltipText = "Explored routes";
+        _explored.MouseFilter = Control.MouseFilterEnum.Pass;
+        summary.AddChild(_explored);
+        _speed = Ui.Text("0/s", 18);
+        _speed.Name = "CvppSpeed";
+        _speed.CustomMinimumSize = new Vector2(96, 0);
+        _speed.TooltipText = "Simulations per second";
+        _speed.MouseFilter = Control.MouseFilterEnum.Pass;
+        summary.AddChild(_speed);
+        _memory = Ui.Text("—", 18);
         _memory.TooltipText = "Memory";
         _memory.MouseFilter = Control.MouseFilterEnum.Pass;
         _memory.AddThemeColorOverride("font_color", Ui.Muted);
+        _memory.HorizontalAlignment = HorizontalAlignment.Right;
         summary.AddChild(_memory);
-        column.AddChild(_progress);
         _route = Flyout("CvppRoute");
         _steps = new Tree
         {
@@ -200,11 +225,12 @@ internal static class SolverHud
     {
         if (_layer == null) return;
         bool busy = SolverController.Busy;
-        bool searching = busy && !SolverController.Executing;
+        bool searching = busy && !SolverController.Executing && !SolverController.Resetting;
         var plan = searching ? SolverController.Preview : SolverController.Plan;
         int step = searching ? 0 : SolverController.Step;
         if (_shown != plan && (plan == null || _route.Visible)) Populate(plan);
         if (_shownStep != step && _shown == plan) UpdateStep(step);
+        RefreshMetrics(searching);
         _layer.Visible = (CombatManager.Instance.IsInProgress || busy || plan != null)
             && !RunManager.Instance.IsPaused && NGame.Instance?.Transition.InTransition != true;
         if (!_layer.Visible) return;
@@ -227,25 +253,39 @@ internal static class SolverHud
         _memoryBudget.Refresh(busy);
         _routeButton.SetPressedNoSignal(_route.Visible);
         _settingsButton.SetPressedNoSignal(_settings.Visible);
-        if (_error != SolverController.Error)
-        {
-            _error = SolverController.Error;
-            _status.AddThemeColorOverride("font_color", _error == null ? Ui.Muted : Ui.Loss);
-        }
+        _error = SolverController.Error;
+        Color statusColor = _error != null ? Ui.Loss.Lightened(.35f)
+            : SolverController.Status is "Time limit" or "Memory limit" or "Search limit" ? Ui.Gold : new Color("eee5cf");
+        if (_statusColor != statusColor) { _statusColor = statusColor; _status.AddThemeColorOverride("font_color", statusColor); }
         _status.Text = SolverController.Resetting ? "Resetting" : _error != null ? "Error" : SolverController.Executing ? "Playing" : SolverController.Status;
         _status.TooltipText = _error ?? SolverController.Status;
         Color handleColor = _error != null ? Ui.Loss : busy ? Ui.Gold : new Color("eee5cf");
         if (_handleColor != handleColor) { _handleColor = handleColor; _handle.AddThemeColorOverride("font_color", handleColor); }
-        _stats.Text = $"{SolverController.Elapsed:F0}s";
+        var progress = SolverController.Progress;
         _score.Text = plan?.FinalHp.ToString() ?? "—";
-        long bytes = SolverController.Progress?.MemoryBytes ?? 0;
-        _memory.Text = bytes == 0 ? "—" : $"{bytes / (1024 * 1024)}M";
         _progress.SelfModulate = busy ? Colors.White : Colors.Transparent;
-        _progress.Indeterminate = searching && SolverController.Seconds == 0;
+        _progress.Indeterminate = searching && (progress == null || SolverController.SearchSeconds == 0);
         _progress.Value = SolverController.Executing && plan != null ? (double)step / plan.Steps.Length
-            : searching && SolverController.Seconds > 0 ? Math.Min(1, (SolverController.Progress?.ElapsedMs ?? 0) / (SolverController.Seconds * 1000)) : 0;
+            : searching && SolverController.SearchSeconds > 0 ? Math.Min(1, (progress?.ElapsedMs ?? 0) / (SolverController.SearchSeconds * 1000)) : 0;
         Layout();
         if (_route.Visible) Ui.FitTree(_steps);
+    }
+
+    private static void RefreshMetrics(bool searching)
+    {
+        var progress = SolverController.Progress;
+        if (!ReferenceEquals(_shownProgress, progress) || _shownSearching != searching)
+        {
+            _shownProgress = progress;
+            _shownSearching = searching;
+            double seconds = (progress?.ElapsedMs ?? 0) / 1000;
+            _stats.Text = progress == null && !searching ? "—" : SolverController.SearchSeconds > 0
+                ? $"{seconds:F0}/{SolverController.SearchSeconds}s" : $"{seconds:F0}s";
+            _explored.Text = (progress?.Simulations ?? 0).ToString("N0", CultureInfo.InvariantCulture);
+            _speed.Text = SolverController.SimulationsPerSecond.ToString("N0", CultureInfo.InvariantCulture) + "/s";
+            long bytes = progress?.MemoryBytes ?? 0;
+            _memory.Text = bytes == 0 ? "—" : (bytes / (1024 * 1024)).ToString("N0", CultureInfo.InvariantCulture) + " MiB";
+        }
     }
 
     private static void Populate(CombatPlan? plan)
@@ -309,6 +349,9 @@ internal static class SolverHud
             if (!Input.IsMouseButtonPressed(MouseButton.Left)) { _dragging = false; Save(); }
         }
         _toolbar.Position = _toolbar.Position.Clamp(new Vector2(8, 8), (view - _toolbar.Size * scale - new Vector2(8, 8)).Max(new Vector2(8, 8)));
+        _progress.Scale = _toolbar.Scale;
+        _progress.Position = _toolbar.Position + new Vector2(8, _toolbar.Size.Y - 4) * scale;
+        _progress.Size = new Vector2(_toolbar.Size.X - 16, 3);
         foreach (var panel in new[] { _route, _settings })
         {
             panel.CustomMinimumSize = new Vector2(_toolbar.Size.X, 0);

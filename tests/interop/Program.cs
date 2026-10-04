@@ -53,6 +53,7 @@ using (var planner = new NativePlanner(32, 8))
 }
 Console.WriteLine("PASS native planner traversal and reward backpropagation");
 await WireTests.Run();
+RateTests.Run();
 
 if (args.Contains("--benchmark"))
 {

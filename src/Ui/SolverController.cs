@@ -20,6 +20,7 @@ internal static class SolverController
     private static CancellationTokenSource? _cancel;
     private static Task? _operation;
     private static readonly Stopwatch Clock = new();
+    private static readonly SearchRate Rate = new();
     private static bool _installed;
     private static bool _initialized;
     private static RunState? _run;
@@ -41,8 +42,10 @@ internal static class SolverController
     internal static string? StopReason { get; private set; }
     internal static int Step { get; private set; }
     internal static int Seconds { get; set; } = 15;
+    internal static int SearchSeconds { get; private set; }
     internal static int MemoryMiB { get; set; } = 2048;
     internal static double Elapsed => Clock.Elapsed.TotalSeconds;
+    internal static double SimulationsPerSecond => Busy && !Executing && !Resetting ? Rate.PerSecond : 0;
     internal static bool Ready => RunManager.Instance.DebugOnlyGetState() is { } run && run.Players.Count == 1
         && RunManager.Instance.NetService?.Type == NetGameType.Singleplayer && NativeCombat.IsStable(run);
 
@@ -77,6 +80,7 @@ internal static class SolverController
                 StopReason = null;
                 Step = 0;
                 Progress = null;
+                Rate.Reset();
                 Status = "Ready";
                 Error = null;
             }
@@ -98,6 +102,7 @@ internal static class SolverController
             ReleaseWorker();
             Plan = Preview = null;
             Progress = null;
+            Rate.Reset();
             ((SceneTree)Engine.GetMainLoop()).ProcessFrame -= Tick;
             SolverHud.Disable();
         }
@@ -109,9 +114,11 @@ internal static class SolverController
         int generation = _generation;
         var previous = Plan?.Steps.Skip(Step).ToArray();
         Progress = null;
+        Rate.Reset();
         Preview = null;
         StopReason = null;
-        Status = "Starting";
+        SearchSeconds = Seconds;
+        Status = "Loading";
         var position = await CombatPosition.Capture();
         await _release;
         if (generation != _generation) return;
@@ -126,12 +133,13 @@ internal static class SolverController
         {
             if (!acceptingProgress || generation != _generation) return;
             Progress = progress;
+            Rate.Observe(progress.Simulations, progress.ElapsedMs);
             if (progress.Plan is { } preview && (Preview == null || preview.FinalHp > Preview.FinalHp
                 || (preview.FinalHp == Preview.FinalHp && preview.Steps.Length < Preview.Steps.Length))) Preview = preview;
             Status = "Searching";
         });
         SolveResult result;
-        try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds, Nodes: 1_000_000, Depth: 256, MemoryMiB: MemoryMiB), incumbent), updates, _cancel!.Token); }
+        try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(SearchSeconds, Nodes: 1_000_000, Depth: 256, MemoryMiB: MemoryMiB), incumbent), updates, _cancel!.Token); }
         finally { acceptingProgress = false; }
         if (generation != _generation) return;
         if (!Ready || CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != position.State)
@@ -142,6 +150,9 @@ internal static class SolverController
             return;
         }
         Plan = Preview = result.Plan;
+        if (result.StopReason != "memory_limit")
+            Progress = new SolveProgress(result.Stats.Simulations, result.Stats.Nodes, result.Plan?.FinalHp,
+                result.ElapsedMs, result.Plan, Progress?.MemoryBytes ?? 0);
         Step = 0;
         StopReason = result.StopReason;
         Status = result.StopReason switch
@@ -250,6 +261,7 @@ internal static class SolverController
         {
             Plan = Preview = null;
             Progress = null;
+            Rate.Reset();
             StopReason = null;
             Error = null;
             Step = 0;
