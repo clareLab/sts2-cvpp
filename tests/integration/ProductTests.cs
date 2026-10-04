@@ -37,6 +37,12 @@ internal static class ProductTests
         if (!SolverController.Busy || SolverController.Preview is not { } preview
             || preview.Steps.Sum(action => action.HpDelta) != preview.FinalHp - run.Players[0].Creature.CurrentHp)
             throw new InvalidOperationException("A complete route with HP deltas was not published during search.");
+        SolverHud.Tick();
+        var toolbar = (Control)Tree.Root.FindChild("CvppToolbar", true, false);
+        Vector2 searchingSize = toolbar.Size;
+        if (Tree.Root.FindChild("CvppSolve", true, false) is not Button { Disabled: false, ButtonPressed: true } solveButton
+            || !solveButton.GetNode<TextureRect>("Pause").Visible || solveButton.GetNode<TextureRect>("Icon").Visible)
+            throw new InvalidOperationException("Solve did not become the pause control during search.");
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
         {
             Click("CvppRouteToggle");
@@ -53,6 +59,8 @@ internal static class ProductTests
         int worker = SolverController.WorkerPid ?? throw new InvalidOperationException("Worker was not retained during combat.");
         if (CombatFingerprint.Capture(run) != before) throw new InvalidOperationException("Searching mutated the live game.");
         SolverHud.Tick();
+        await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
+        if (toolbar.Size != searchingSize) throw new InvalidOperationException("Toolbar size changed when search stopped.");
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
         {
             await Screenshot("toolbar");
@@ -67,12 +75,12 @@ internal static class ProductTests
             SolverHud.Close();
             RenderingServer.RenderLoopEnabled = false;
         }
-        SolverController.Play(ExecutionRange.Step);
+        Click("CvppStep");
         await Until(() => !SolverController.Busy, "single step");
         if (SolverController.Error != null || SolverController.Step == 0 || SolverController.Plan == null)
             throw new InvalidOperationException(SolverController.Error ?? "Single step failed.");
         int step = SolverController.Step;
-        SolverController.Play(ExecutionRange.Turn);
+        Click("CvppTurn");
         await Until(() => !SolverController.Busy, "play turn");
         if (SolverController.Error != null || SolverController.Step <= step || SolverController.Plan == null)
             throw new InvalidOperationException(SolverController.Error ?? "Turn execution failed.");
@@ -80,15 +88,32 @@ internal static class ProductTests
         int previousHp = plan.FinalHp;
         SolverController.Seconds = 0;
         timing.Restart();
-        SolverController.Solve();
+        Click("CvppSolve");
         await Until(() => SolverController.Progress?.BestHp != null || !SolverController.Busy, "warm worker", 30);
-        SolverController.Stop();
+        SolverHud.Tick();
+        Click("CvppSolve");
         await Until(() => !SolverController.Busy, "cancel search", 15);
         plan = SolverController.Plan ?? throw new InvalidOperationException(SolverController.Error ?? "Cancellation discarded the winning route.");
         if (plan.FinalHp < previousHp) throw new InvalidOperationException("Searching again lost a better route.");
         double cancelledSolveMs = timing.Elapsed.TotalMilliseconds;
         if (SolverController.Error != null || CombatFingerprint.Capture(run) != before)
             throw new InvalidOperationException("Solving the current turn mutated the live game.");
+        if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) await Screenshot("paused");
+        if (characterId == "IRONCLAD")
+        {
+            Click("CvppSolve");
+            await Until(() => SolverController.Preview != null || !SolverController.Busy, "reset active search", 30);
+            if (!SolverController.Busy) throw new InvalidOperationException("Reset probe ended before reset.");
+            await Reset(run);
+            await LifecycleTests.Released(worker);
+            Click("CvppSolve");
+            await Until(() => SolverController.Preview != null || !SolverController.Busy, "solve after reset", 100);
+            if (SolverController.Busy) Click("CvppSolve");
+            await Until(() => !SolverController.Busy, "pause after reset", 15);
+            if (SolverController.Plan == null || SolverController.Error != null)
+                throw new InvalidOperationException(SolverController.Error ?? "Solve after reset failed.");
+            worker = SolverController.WorkerPid ?? throw new InvalidOperationException("Reset did not allow a new worker.");
+        }
         object? memory = characterId == "IRONCLAD" ? await LifecycleTests.Repeat(run, worker) : null;
         plan = SolverController.Plan!;
         if (characterId == "IRONCLAD")
@@ -99,16 +124,40 @@ internal static class ProductTests
             if (SolverController.Plan != plan) throw new InvalidOperationException("Idle retirement discarded the route.");
         }
         SolverController.Play(ExecutionRange.Combat);
+        SolverHud.Tick();
+        var auto = (Button)Tree.Root.FindChild("CvppAuto", true, false);
+        if (auto.Disabled || !auto.ButtonPressed || !auto.GetNode<TextureRect>("Pause").Visible)
+            throw new InvalidOperationException("Takeover did not become the pause control during execution.");
+        Click("CvppAuto");
+        await Until(() => !SolverController.Busy, "pause takeover", 30);
+        if (SolverController.Error != null || SolverController.Plan != plan)
+            throw new InvalidOperationException(SolverController.Error ?? "Pausing takeover discarded the route.");
+        if (CombatManager.Instance.IsInProgress) Click("CvppAuto");
         await Until(() => !SolverController.Busy, "take over", 60);
         if (SolverController.Error != null || CombatManager.Instance.IsInProgress || run.Players.Single().Creature.CurrentHp != plan.FinalHp)
             throw new InvalidOperationException(SolverController.Error ?? "Takeover did not reproduce the winning route.");
         await LifecycleTests.Released(worker);
+        if (characterId == "IRONCLAD") await Reset(run);
         RunManager.Instance.CleanUp();
         await Until(() => SolverController.Plan == null, "clear ended run");
         if (Tree.Root.FindChild("CvppSteps", true, false) is not Godot.Tree steps || steps.GetRoot() != null)
             throw new InvalidOperationException("Hidden route retained tree items.");
         GD.Print($"[cvpp] PRODUCT {plan.FinalHp} HP, {plan.Steps.Length} steps; step, turn, cancellation, current-position replay and takeover verified");
         return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs, memory };
+    }
+
+    private static async Task Reset(RunState run)
+    {
+        string before = CombatFingerprint.Capture(run);
+        int seconds = SolverController.Seconds;
+        int memory = SolverController.MemoryMiB;
+        Click("CvppReset");
+        await Until(() => !SolverController.Busy, "reset completed route", 15);
+        if (SolverController.Plan != null || SolverController.Preview != null || SolverController.Progress != null
+            || SolverController.Step != 0 || SolverController.Status != "Ready" || SolverController.Elapsed != 0
+            || SolverController.Seconds != seconds || SolverController.MemoryMiB != memory
+            || !SolverController.WorkerReleased || CombatFingerprint.Capture(run) != before)
+            throw new InvalidOperationException("Reset did not clear results while preserving the live state and settings.");
     }
 
     internal static async Task Until(Func<bool> ready, string stage, int seconds = 30)

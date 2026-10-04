@@ -20,7 +20,7 @@ internal sealed class BudgetEditor
         _maximum = maximum;
         Root.AddThemeConstantOverride("separation", 6);
         Root.AddChild(Ui.Text(name, 18));
-        var row = new HBoxContainer();
+        var row = new HBoxContainer { Name = "Cvpp" + name + "Presets" };
         row.AddThemeConstantOverride("separation", 4);
         Root.AddChild(row);
         foreach (var preset in presets)
@@ -56,7 +56,12 @@ internal sealed class BudgetEditor
         Input.TextSubmitted += _ => { Commit(); Input.ReleaseFocus(); };
         Input.FocusExited += Commit;
         custom.AddChild(Input);
-        custom.AddChild(Ui.Text(unit, 16));
+        var suffix = Ui.Text(unit, 18);
+        suffix.Name = "Cvpp" + name + "Unit";
+        suffix.CustomMinimumSize = new Vector2(36, 34);
+        suffix.VerticalAlignment = VerticalAlignment.Center;
+        suffix.AddThemeColorOverride("font_color", Ui.Muted);
+        custom.AddChild(suffix);
     }
 
     private void Select(int value)

@@ -24,6 +24,19 @@ internal static class HudTests
         if (SolverController.Seconds != 37 || CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != before)
             throw new InvalidOperationException("Budget keyboard input changed the combat or did not submit.");
         var memory = Node<LineEdit>("CvppMemoryCustom");
+        var timeUnit = Node<Control>("CvppTimeUnit").GetGlobalRect();
+        var memoryUnit = Node<Control>("CvppMemoryUnit").GetGlobalRect();
+        if (Math.Abs(timeUnit.Position.X - memoryUnit.Position.X) > 1
+            || Math.Abs(time.GetGlobalRect().End.X - memory.GetGlobalRect().End.X) > 1
+            || Math.Abs(timeUnit.GetCenter().Y - time.GetGlobalRect().GetCenter().Y) > 1
+            || Math.Abs(memoryUnit.GetCenter().Y - memory.GetGlobalRect().GetCenter().Y) > 1)
+            throw new InvalidOperationException("Custom budget fields or units are misaligned.");
+        var timePresets = Node<Control>("CvppTimePresets").GetChildren().Cast<Button>().ToArray();
+        var memoryPresets = Node<Control>("CvppMemoryPresets").GetChildren().Cast<Button>().ToArray();
+        if (timePresets.Length != 5 || memoryPresets.Length != 5
+            || timePresets.Where((button, index) => Math.Abs(button.GlobalPosition.X - memoryPresets[index].GlobalPosition.X) > 1
+                || Math.Abs(button.Size.X - memoryPresets[index].Size.X) > 1).Any())
+            throw new InvalidOperationException("Time and memory presets do not share five aligned columns.");
         memory.Text = "1536";
         memory.EmitSignal(LineEdit.SignalName.TextSubmitted, memory.Text);
         HudSettings.Load();

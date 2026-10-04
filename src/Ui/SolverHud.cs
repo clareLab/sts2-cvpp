@@ -23,7 +23,7 @@ internal static class SolverHud
     private static Button _step = null!;
     private static Button _turn = null!;
     private static Button _auto = null!;
-    private static Button _stop = null!;
+    private static Button _reset = null!;
     private static Button _routeButton = null!;
     private static Button _settingsButton = null!;
     private static ProgressBar _progress = null!;
@@ -55,9 +55,9 @@ internal static class SolverHud
         _toolbar = new PanelContainer { Name = "CvppToolbar", Theme = Ui.Theme };
         _layer.AddChild(_toolbar);
         var column = new VBoxContainer();
-        column.AddThemeConstantOverride("separation", 3);
-        Ui.Padding(_toolbar, 4).AddChild(column);
-        var bar = new HBoxContainer();
+        column.AddThemeConstantOverride("separation", 6);
+        Ui.Padding(_toolbar, 6).AddChild(column);
+        var bar = new HBoxContainer { Name = "CvppCommands" };
         bar.AddThemeConstantOverride("separation", 4);
         column.AddChild(bar);
         _handle = Ui.Text("CV++", 16);
@@ -76,12 +76,12 @@ internal static class SolverHud
             }
         };
         bar.AddChild(_handle);
-        _solve = Ui.Icon(Ui.Search, "Solve", "CvppSolve", () => SolverController.Solve());
-        _step = Ui.Icon(Ui.Step, "Step", "CvppStep", () => SolverController.Play(ExecutionRange.Step), flip: true);
-        _turn = Ui.Icon(Ui.Turn, "Turn", "CvppTurn", () => SolverController.Play(ExecutionRange.Turn));
-        _auto = Ui.Icon(Ui.Auto, "Take over", "CvppAuto", () => SolverController.Play(ExecutionRange.Combat));
-        _stop = Ui.Icon(Ui.Close, "Stop (Esc)", "CvppStop", SolverController.Stop);
-        foreach (var button in new[] { _solve, _step, _turn, _auto, _stop }) bar.AddChild(button);
+        _solve = Ui.Command(Ui.Search, "Solve", "CvppSolve", () => SolverController.Solve());
+        _step = Ui.Command(Ui.Step, "Step", "CvppStep", () => SolverController.Play(ExecutionRange.Step), flip: true);
+        _turn = Ui.Command(Ui.Turn, "Turn", "CvppTurn", () => SolverController.Play(ExecutionRange.Turn));
+        _auto = Ui.Command(Ui.Auto, "Take over", "CvppAuto", () => SolverController.Play(ExecutionRange.Combat));
+        _reset = Ui.Icon(Ui.Reset, "Reset", "CvppReset", SolverController.Reset);
+        foreach (var button in new[] { _solve, _step, _turn, _auto, _reset }) bar.AddChild(button);
         bar.AddChild(new VSeparator());
         _routeButton = Ui.Icon(Ui.Route, "Route (F10)", "CvppRouteToggle", Toggle);
         _routeButton.ToggleMode = true;
@@ -90,9 +90,8 @@ internal static class SolverHud
         _settingsButton.ToggleMode = true;
         bar.AddChild(_settingsButton);
         _progress = new ProgressBar { Name = "CvppProgress", ShowPercentage = false, CustomMinimumSize = new Vector2(0, 2), MaxValue = 1 };
-        column.AddChild(_progress);
-        var summary = new HBoxContainer { Name = "CvppSummary" };
-        summary.AddThemeConstantOverride("separation", 7);
+        var summary = new HBoxContainer { Name = "CvppSummary", CustomMinimumSize = new Vector2(0, 22) };
+        summary.AddThemeConstantOverride("separation", 12);
         column.AddChild(summary);
         _status = Ui.Text("Ready", 16);
         _status.Name = "CvppStatus";
@@ -101,18 +100,17 @@ internal static class SolverHud
         _status.ClipText = true;
         _status.MouseFilter = Control.MouseFilterEnum.Pass;
         summary.AddChild(_status);
-        summary.AddChild(Ui.Image(Ui.Heart, 16));
         _score = Ui.Text("—", 16);
         _score.TooltipText = "Final HP";
-        summary.AddChild(_score);
-        summary.AddChild(Ui.Image(Ui.Timer, 16));
+        summary.AddChild(Metric(Ui.Heart, _score));
         _stats = Ui.Text("0s", 16);
-        summary.AddChild(_stats);
+        summary.AddChild(Metric(Ui.Timer, _stats));
         _memory = Ui.Text("—", 16);
         _memory.TooltipText = "Memory";
         _memory.MouseFilter = Control.MouseFilterEnum.Pass;
         _memory.AddThemeColorOverride("font_color", Ui.Muted);
         summary.AddChild(_memory);
+        column.AddChild(_progress);
         _route = Flyout("CvppRoute");
         _steps = new Tree
         {
@@ -127,14 +125,17 @@ internal static class SolverHud
             CustomMinimumSize = new Vector2(0, 304),
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
         };
-        foreach (var (index, title, width) in new[] { (0, "#", 30), (1, "Turn", 44), (2, "Action", 1), (3, "HP", 42) })
+        foreach (var (index, title, width) in new[] { (0, "#", 40), (1, "Turn", 44), (2, "", 1), (3, "HP", 42) })
         {
             _steps.SetColumnTitle(index, title);
             _steps.SetColumnExpand(index, index == 2);
             _steps.SetColumnCustomMinimumWidth(index, width);
             _steps.SetColumnTitleAlignment(index, index == 2 ? HorizontalAlignment.Left : HorizontalAlignment.Center);
         }
-        Ui.Padding(_route, 4).AddChild(_steps);
+        Ui.Padding(_route, 6).AddChild(_steps);
+        var actionHeading = Ui.Text("Action", 18);
+        actionHeading.Name = "CvppActionHeading";
+        _steps.AddChild(actionHeading);
         _empty = Ui.Text("No route", 18);
         _empty.HorizontalAlignment = HorizontalAlignment.Center;
         _empty.VerticalAlignment = VerticalAlignment.Center;
@@ -144,14 +145,23 @@ internal static class SolverHud
         _settings = Flyout("CvppOptions");
         var options = new VBoxContainer();
         options.AddThemeConstantOverride("separation", 8);
-        Ui.Padding(_settings, 8).AddChild(options);
+        Ui.Padding(_settings, 6).AddChild(options);
         _timeBudget = new BudgetEditor("Time", "s", [("5", 5), ("15", 15), ("30", 30), ("60", 60), ("∞", 0)],
             86_400, () => SolverController.Seconds, value => { SolverController.Seconds = value; Save(); });
         options.AddChild(_timeBudget.Root);
         options.AddChild(new HSeparator());
-        _memoryBudget = new BudgetEditor("Memory", "MiB", [("1 GiB", 1024), ("2 GiB", 2048), ("4 GiB", 4096), ("∞", 0)],
+        _memoryBudget = new BudgetEditor("Memory", "MiB", [("1 GiB", 1024), ("2 GiB", 2048), ("4 GiB", 4096), ("8 GiB", 8192), ("∞", 0)],
             1_048_576, () => SolverController.MemoryMiB, value => { SolverController.MemoryMiB = value; Save(); });
         options.AddChild(_memoryBudget.Root);
+    }
+
+    private static HBoxContainer Metric(string icon, Label value)
+    {
+        var metric = new HBoxContainer();
+        metric.AddThemeConstantOverride("separation", 4);
+        metric.AddChild(Ui.Image(icon, 16));
+        metric.AddChild(value);
+        return metric;
     }
 
     private static PanelContainer Flyout(string name)
@@ -200,11 +210,19 @@ internal static class SolverHud
         if (!_layer.Visible) return;
         bool ready = SolverController.Ready;
         _shield.Visible = SolverController.Executing;
-        Ui.Enabled(_solve, !busy && ready);
-        Ui.Enabled(_step, !busy && ready && plan != null && step < plan.Steps.Length);
-        Ui.Enabled(_turn, !_step.Disabled);
-        Ui.Enabled(_auto, !busy && ready && (plan == null || step < plan.Steps.Length));
-        Ui.Enabled(_stop, busy);
+        Button? active = !busy || SolverController.Resetting ? null : SolverController.ActiveRange switch
+        {
+            ExecutionRange.Step => _step,
+            ExecutionRange.Turn => _turn,
+            ExecutionRange.Combat => _auto,
+            _ => _solve
+        };
+        bool executable = ready && plan != null && step < plan.Steps.Length;
+        Ui.Running(_solve, active == _solve, active == _solve || (!busy && ready));
+        Ui.Running(_step, active == _step, active == _step || (!busy && executable));
+        Ui.Running(_turn, active == _turn, active == _turn || (!busy && executable));
+        Ui.Running(_auto, active == _auto, active == _auto || (!busy && ready && (plan == null || step < plan.Steps.Length)));
+        Ui.Enabled(_reset, !SolverController.Resetting && (busy || plan != null || SolverController.Progress != null || SolverController.Error != null));
         _timeBudget.Refresh(busy);
         _memoryBudget.Refresh(busy);
         _routeButton.SetPressedNoSignal(_route.Visible);
@@ -214,7 +232,7 @@ internal static class SolverHud
             _error = SolverController.Error;
             _status.AddThemeColorOverride("font_color", _error == null ? Ui.Muted : Ui.Loss);
         }
-        _status.Text = _error != null ? "Error" : SolverController.Executing ? "Playing" : SolverController.Status;
+        _status.Text = SolverController.Resetting ? "Resetting" : _error != null ? "Error" : SolverController.Executing ? "Playing" : SolverController.Status;
         _status.TooltipText = _error ?? SolverController.Status;
         Color handleColor = _error != null ? Ui.Loss : busy ? Ui.Gold : new Color("eee5cf");
         if (_handleColor != handleColor) { _handleColor = handleColor; _handle.AddThemeColorOverride("font_color", handleColor); }
@@ -222,7 +240,7 @@ internal static class SolverHud
         _score.Text = plan?.FinalHp.ToString() ?? "—";
         long bytes = SolverController.Progress?.MemoryBytes ?? 0;
         _memory.Text = bytes == 0 ? "—" : $"{bytes / (1024 * 1024)}M";
-        _progress.Visible = busy;
+        _progress.SelfModulate = busy ? Colors.White : Colors.Transparent;
         _progress.Indeterminate = searching && SolverController.Seconds == 0;
         _progress.Value = SolverController.Executing && plan != null ? (double)step / plan.Steps.Length
             : searching && SolverController.Seconds > 0 ? Math.Min(1, (SolverController.Progress?.ElapsedMs ?? 0) / (SolverController.Seconds * 1000)) : 0;

@@ -8,7 +8,6 @@ internal static class Ui
     internal const string Step = "res://images/atlases/compressed.sprites/back_button_arrow.tres";
     internal const string Turn = "res://images/atlases/ui_atlas.sprites/settings_tiny_right_arrow.tres";
     internal const string Auto = "res://images/atlases/ui_atlas.sprites/map/icons/map_monster.tres";
-    internal const string Close = "res://images/atlases/compressed.sprites/back_button_x.tres";
     internal const string Route = "res://images/atlases/relic_atlas.sprites/history_course.tres";
     internal const string Settings = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_settings.tres";
     internal const string Heart = "res://images/atlases/ui_atlas.sprites/top_bar/top_bar_heart.tres";
@@ -20,7 +19,18 @@ internal static class Ui
     internal static readonly Color Loss = new("bd4746");
     internal static readonly Color Gain = new("507b46");
     private static Theme? _theme;
+    private static Texture2D? _pause;
+    private static Texture2D? _reset;
     internal static Theme Theme => _theme ??= CreateTheme();
+    private static Texture2D Pause => _pause ??= Glyph("<path d='M8 5v14M16 5v14' stroke='#eee5cf' stroke-width='4' stroke-linecap='round'/>");
+    internal static Texture2D Reset => _reset ??= Glyph("<path d='M4 10a8 8 0 1 1 1 7M4 4v6h6' fill='none' stroke='#eee5cf' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/>");
+
+    private static Texture2D Glyph(string content)
+    {
+        using var image = new Image();
+        image.LoadSvgFromString("<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" + content + "</svg>", 2);
+        return ImageTexture.CreateFromImage(image);
+    }
 
     internal static Texture2D Texture(string path)
     {
@@ -29,9 +39,11 @@ internal static class Ui
             ? new AtlasTexture { Atlas = atlas.Atlas, Region = atlas.Region, FilterClip = true } : texture;
     }
 
-    internal static TextureRect Image(string path, int size = 24) => new()
+    internal static TextureRect Image(string path, int size = 24) => Image(Texture(path), size);
+
+    private static TextureRect Image(Texture2D texture, int size = 24) => new()
     {
-        Texture = Texture(path),
+        Texture = texture,
         CustomMinimumSize = new Vector2(size, size),
         ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
         StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
@@ -41,13 +53,23 @@ internal static class Ui
 
     internal static Label Text(string text, int size = 20)
     {
-        var label = new Label { Text = text, Theme = Theme, MouseFilter = Control.MouseFilterEnum.Ignore };
+        var label = new Label { Text = text, Theme = Theme, VerticalAlignment = VerticalAlignment.Center, MouseFilter = Control.MouseFilterEnum.Ignore };
         label.AddThemeFontSizeOverride("font_size", size);
         return label;
     }
 
     internal static void FitTree(Tree tree)
     {
+        if (tree.GetNodeOrNull<Label>("CvppActionHeading") is { } heading)
+        {
+            var panel = tree.GetThemeStylebox("panel");
+            float left = panel.ContentMarginLeft + tree.GetColumnWidth(0) + tree.GetColumnWidth(1);
+            float inset = 28 + tree.GetThemeConstant("h_separation") * 2;
+            float height = tree.GetThemeFont("title_button_font").GetHeight(tree.GetThemeFontSize("title_button_font_size"))
+                + tree.GetThemeStylebox("title_button_normal").GetMinimumSize().Y;
+            heading.Position = new Vector2(left + inset, panel.ContentMarginTop);
+            heading.Size = new Vector2(Math.Max(1, tree.GetColumnWidth(2) - inset), height);
+        }
         if (tree.GetRoot() is not { } root) return;
         string layout = root.GetInstanceId() + ":" + string.Join(':', Enumerable.Range(0, tree.Columns).Select(tree.GetColumnWidth));
         if (tree.GetMeta("cvpp_layout", "").AsString() == layout) return;
@@ -73,7 +95,37 @@ internal static class Ui
         }
     }
 
-    internal static Button Icon(string path, string tooltip, string name, Action action, bool flip = false)
+    internal static Button Icon(string path, string tooltip, string name, Action action, bool flip = false) => Icon(Texture(path), tooltip, name, action, flip);
+
+    internal static Button Command(string path, string tooltip, string name, Action action, bool flip = false)
+    {
+        var button = Icon(path, tooltip, name, () => { if (SolverController.Busy) SolverController.Stop(); else action(); }, flip);
+        button.ToggleMode = true;
+        button.SetMeta("cvpp_tooltip", tooltip);
+        var pause = Image(Pause);
+        pause.Name = "Pause";
+        pause.Visible = false;
+        pause.CustomMinimumSize = Vector2.Zero;
+        button.AddChild(pause);
+        pause.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect, margin: 8);
+        return button;
+    }
+
+    internal static void Running(Button button, bool active, bool enabled)
+    {
+        button.SetPressedNoSignal(active);
+        var pause = button.GetNode<TextureRect>("Pause");
+        if (pause.Visible != active)
+        {
+            button.GetNode<TextureRect>("Icon").Visible = !active;
+            pause.Visible = active;
+            button.TooltipText = active ? "Pause (Esc)" : button.GetMeta("cvpp_tooltip").AsString();
+        }
+        pause.Modulate = enabled ? Colors.White : new Color(1, 1, 1, .3f);
+        Enabled(button, enabled);
+    }
+
+    internal static Button Icon(Texture2D texture, string tooltip, string name, Action action, bool flip = false)
     {
         var button = new Button
         {
@@ -84,7 +136,7 @@ internal static class Ui
             FocusMode = Control.FocusModeEnum.None,
             MouseDefaultCursorShape = Control.CursorShape.PointingHand
         };
-        var icon = Image(path);
+        var icon = Image(texture);
         icon.Name = "Icon";
         icon.CustomMinimumSize = Vector2.Zero;
         icon.FlipH = flip;

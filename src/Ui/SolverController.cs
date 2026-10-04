@@ -31,6 +31,8 @@ internal static class SolverController
     internal static bool WorkerReleased => _worker == null && _release.IsCompleted;
     internal static bool Busy => _operation is { IsCompleted: false };
     internal static bool Executing { get; private set; }
+    internal static bool Resetting { get; private set; }
+    internal static ExecutionRange? ActiveRange { get; private set; }
     internal static string Status { get; private set; } = "Ready";
     internal static string? Error { get; private set; }
     internal static SolveProgress? Progress { get; private set; }
@@ -148,11 +150,12 @@ internal static class SolverController
             "memory_limit" => "Memory limit",
             "node_or_depth_limit" => "Search limit",
             "exhausted" => "Exhausted",
+            "cancelled" => "Paused",
             _ => "Stopped"
         };
         if (result.StopReason == "memory_limit") ReleaseWorker();
         if (takeOver && Plan != null && !_cancel.IsCancellationRequested) await Execute(ExecutionRange.Combat);
-    });
+    }, takeOver ? ExecutionRange.Combat : null);
 
     internal static void Play(ExecutionRange range)
     {
@@ -161,7 +164,7 @@ internal static class SolverController
             if (range == ExecutionRange.Combat) Solve(takeOver: true);
             return;
         }
-        Launch(() => Execute(range));
+        Launch(() => Execute(range), range);
     }
 
     private static async Task Execute(ExecutionRange range)
@@ -201,11 +204,12 @@ internal static class SolverController
         finally { Executing = false; }
     }
 
-    private static void Launch(Func<Task> action)
+    private static void Launch(Func<Task> action, ExecutionRange? range = null)
     {
         if (Busy) return;
         _cancel?.Dispose();
         _cancel = new CancellationTokenSource();
+        ActiveRange = range;
         Error = null;
         Clock.Restart();
         _operation = Run(action, _generation);
@@ -214,7 +218,7 @@ internal static class SolverController
     private static async Task Run(Func<Task> action, int generation)
     {
         try { await action(); }
-        catch (OperationCanceledException) { if (generation == _generation) Status = "Stopped"; }
+        catch (OperationCanceledException) { if (generation == _generation) Status = "Paused"; }
         catch (Exception error)
         {
             if (generation == _generation) { Status = "Error"; Error = error.Message; }
@@ -224,6 +228,37 @@ internal static class SolverController
     }
 
     internal static void Stop() => _cancel?.Cancel();
+
+    internal static void Reset()
+    {
+        if (Resetting) return;
+        Stop();
+        _generation++;
+        Resetting = true;
+        _operation = Clear(_operation);
+    }
+
+    private static async Task Clear(Task? pending)
+    {
+        try
+        {
+            ReleaseWorker();
+            if (pending != null) await pending;
+            await _release;
+        }
+        finally
+        {
+            Plan = Preview = null;
+            Progress = null;
+            StopReason = null;
+            Error = null;
+            Step = 0;
+            Status = "Ready";
+            ActiveRange = null;
+            Clock.Reset();
+            Resetting = false;
+        }
+    }
 
     internal static bool Input(InputEvent input)
     {
