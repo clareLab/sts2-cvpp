@@ -19,7 +19,8 @@ while (search.Next(path) is >= 0 and var length)
     }
 }
 if (search.Best(path) != 2 || !path.AsSpan(0, 2).SequenceEqual([10u, 12u])
-    || search.Stats != new SearchStats(5, 5, 0, 1, 12))
+    || search.Stats with { MemoryBytes = 0 } != new SearchStats(5, 5, 0, 1, 12, 0)
+    || search.Stats.MemoryBytes is < 512 or > 4096)
     throw new InvalidOperationException("Native search result or ABI layout differs.");
 using var limited = new NativeSearch(2, 2);
 if (limited.Next(path) != 0) throw new InvalidOperationException("Missing root.");
@@ -33,13 +34,14 @@ Console.WriteLine("PASS native search, budget, negative scores and struct layout
 using var cancellation = new CancellationTokenSource();
 var interrupted = await SearchDriver.Run(8, 4, TimeSpan.FromSeconds(1), route =>
 {
-    if (route.Length == 0) return Task.FromResult(new BranchEvaluation(0, false, [1, 2]));
+    if (route.Length == 0) return ValueTask.FromResult(new BranchEvaluation(0, false, [1, 2]));
     cancellation.Cancel();
-    return Task.FromResult(new BranchEvaluation(7, true, []));
+    return ValueTask.FromResult(new BranchEvaluation(7, true, []));
 }, cancellation.Token);
 if (interrupted.StopReason != "cancelled" || interrupted.Path is not [1] || interrupted.Stats.BestScore != 7)
     throw new InvalidOperationException("Cancellation discarded a completed solution.");
 Console.WriteLine("PASS cancellation preserves the best completed route");
+await ReplayTests.Run();
 
 if (args.Contains("--benchmark"))
 {
@@ -60,6 +62,6 @@ if (args.Contains("--benchmark"))
         if (tree.Stats.Evaluated != 8191 || tree.Stats.BestScore != 4095 || tree.Best(route) != 12)
             throw new InvalidOperationException("Native benchmark lost nodes or returned the wrong route.");
         if (iteration > 0)
-            Console.WriteLine($"BENCH {tree.Stats.Evaluated} nodes, {elapsed:F3} ms, {allocated} hot-loop managed bytes");
+            Console.WriteLine($"BENCH {tree.Stats.Evaluated} nodes, {elapsed:F3} ms, {allocated} hot-loop managed bytes, {tree.Stats.MemoryBytes} native bytes");
     }
 }

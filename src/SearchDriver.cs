@@ -8,7 +8,7 @@ internal sealed record SearchResult(uint[]? Path, SearchStats Stats, double Elap
 internal static class SearchDriver
 {
     internal static async Task<SearchResult> Run(uint nodeLimit, ushort depthLimit, TimeSpan timeLimit,
-        Func<ReadOnlyMemory<uint>, Task<BranchEvaluation>> evaluate, CancellationToken cancellationToken = default)
+        Func<ReadOnlyMemory<uint>, ValueTask<BranchEvaluation>> evaluate, CancellationToken cancellationToken = default)
     {
         if (timeLimit <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeLimit));
         using var search = new NativeSearch(nodeLimit, depthLimit);

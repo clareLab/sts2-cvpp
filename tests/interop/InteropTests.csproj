@@ -6,5 +6,6 @@
     <Compile Include="../../src/NativeCore.cs" Link="NativeCore.cs" />
     <Compile Include="../../src/NativeSearch.cs" Link="NativeSearch.cs" />
     <Compile Include="../../src/SearchDriver.cs" Link="SearchDriver.cs" />
+    <Compile Include="../../src/ReplayCursor.cs" Link="ReplayCursor.cs" />
   </ItemGroup>
 </Project>

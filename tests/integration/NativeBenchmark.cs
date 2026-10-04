@@ -96,11 +96,12 @@ internal static class NativeBenchmark
         string checkpointHash = Convert.ToHexString(SHA256.HashData(checkpoint));
         var samples = new List<Sample>();
         var expected = new Dictionary<bool, string[]>();
-        foreach (int backend in new[] { 0, 1, 2 })
+        foreach (int backend in new[] { 0, 1, 2, 3 })
             for (int iteration = -2; iteration < sampleCount; iteration++)
             {
                 bool nonInteractive = backend != 0;
-                WorkerRuntime.Active = backend == 2;
+                WorkerRuntime.Active = backend >= 2;
+                WorkerRuntime.PumpContinuations = backend == 3;
                 NonInteractiveMode.AutoSlayerCheck = () => nonInteractive;
                 bool attack = iteration % 2 == 0;
                 long allocated = GC.GetTotalAllocatedBytes();
@@ -141,7 +142,8 @@ internal static class NativeBenchmark
                 else expected[attack] = trajectory.ToArray();
                 if (Convert.ToHexString(SHA256.HashData(checkpoint)) != checkpointHash)
                     throw new InvalidOperationException("Checkpoint bytes changed.");
-                var sample = new Sample(iteration < 0, nonInteractive, WorkerRuntime.Active, attack, elapsed, managedBytes, timings, trajectory);
+                var sample = new Sample(iteration < 0, nonInteractive, WorkerRuntime.Active,
+                    WorkerRuntime.PumpContinuations, attack, elapsed, managedBytes, timings, trajectory);
                 samples.Add(sample);
                 GD.Print($"[cvpp] BRANCH {character.Id.Entry}/{seed}/{iteration}/{backend}: {elapsed:F1} ms, {managedBytes} managed bytes");
             }
@@ -163,24 +165,85 @@ internal static class NativeBenchmark
     private static async Task<object> Search(byte[] checkpoint)
     {
         WorkerRuntime.Active = true;
+        WorkerRuntime.PumpContinuations = true;
         NonInteractiveMode.AutoSlayerCheck = () => true;
+        var expected = new List<(uint[] Path, string State)>();
+        SearchResult? referenceResult = null;
+        SearchResult? optimizedResult = null;
         long baseline = long.MinValue;
-        var result = await SearchDriver.Run(4096, 4, TimeSpan.FromSeconds(10), async path =>
+        async Task<object> Trial(bool pump, bool reuse, bool validate)
         {
-            var state = await Restore(checkpoint, new Dictionary<string, double>());
-            int initialTurn = state.Players.Single().PlayerCombatState!.TurnNumber;
-            for (int index = 0; index < path.Length; index++) await Execute(state, path.Span[index]);
-            bool solution = !CombatManager.Instance.IsInProgress
-                || state.Players.Single().PlayerCombatState!.TurnNumber > initialTurn;
-            long score = Score(state);
-            if (path.Length == 1 && path.Span[0] == uint.MaxValue) baseline = score;
-            return new BranchEvaluation(score, solution, solution ? [] : Actions(state));
-        });
-        if (result.Path == null || result.Stats.BestScore < baseline || baseline == long.MinValue)
-            throw new InvalidOperationException("Search failed to preserve its native end-turn baseline.");
-        var worker = await Restore(checkpoint, new Dictionary<string, double>());
+            WorkerRuntime.PumpContinuations = pump;
+            int visited = 0;
+            int initialTurn = 0;
+            uint restores = 0;
+            uint executed = 0;
+            var cursor = new ReplayCursor<RunState>(4, () => Restore(checkpoint), Execute);
+            long allocated = GC.GetTotalAllocatedBytes();
+            var result = await SearchDriver.Run(4096, 4, TimeSpan.FromSeconds(10), async path =>
+            {
+                RunState state;
+                if (reuse) state = await cursor.MoveTo(path);
+                else
+                {
+                    state = await Restore(checkpoint);
+                    restores++;
+                    for (int index = 0; index < path.Length; index++)
+                    {
+                        await Execute(state, path.Span[index]);
+                        executed++;
+                    }
+                }
+                if (path.IsEmpty) initialTurn = state.Players.Single().PlayerCombatState!.TurnNumber;
+                if (validate)
+                {
+                    string fingerprint = Fingerprint(state);
+                    if (referenceResult == null) expected.Add((path.ToArray(), fingerprint));
+                    else if (visited >= expected.Count || !path.Span.SequenceEqual(expected[visited].Path)
+                        || fingerprint != expected[visited].State)
+                        throw new InvalidOperationException("Optimized replay diverged from independent root replay.");
+                }
+                visited++;
+                bool solution = !CombatManager.Instance.IsInProgress
+                    || state.Players.Single().PlayerCombatState!.TurnNumber > initialTurn;
+                long score = Score(state);
+                if (path.Length == 1 && path.Span[0] == uint.MaxValue) baseline = score;
+                return new BranchEvaluation(score, solution, solution ? [] : Actions(state));
+            });
+            long managedBytes = GC.GetTotalAllocatedBytes() - allocated;
+            if (result.Path == null || result.Stats.BestScore < baseline || baseline == long.MinValue)
+                throw new InvalidOperationException("Search failed to preserve its native end-turn baseline.");
+            if (referenceResult == null) referenceResult = result;
+            else if (result.Stats != referenceResult.Stats || !result.Path.SequenceEqual(referenceResult.Path!)
+                || result.StopReason != referenceResult.StopReason || (validate && visited != expected.Count))
+                throw new InvalidOperationException("Optimized search changed its traversal or result.");
+            if (pump && reuse && !validate) optimizedResult = result;
+            return new
+            {
+                pump,
+                reuse,
+                result.ElapsedMs,
+                managed_bytes = managedBytes,
+                restores = reuse ? cursor.Restores : restores,
+                actions = reuse ? cursor.Actions : executed
+            };
+        }
+        await Trial(false, false, true);
+        await Trial(true, true, true);
+        await Trial(true, false, false);
+        var samples = new List<object>();
+        for (int iteration = 0; iteration < 3; iteration++)
+        {
+            var modes = new[] { (Pump: false, Reuse: false), (Pump: true, Reuse: false), (Pump: true, Reuse: true) };
+            if (iteration % 2 != 0) Array.Reverse(modes);
+            foreach (var mode in modes) samples.Add(await Trial(mode.Pump, mode.Reuse, false));
+        }
+        var result = optimizedResult ?? throw new InvalidOperationException("Missing optimized search result.");
+        uint[] bestPath = result.Path ?? throw new InvalidOperationException("Missing verified route.");
+        WorkerRuntime.PumpContinuations = true;
+        var worker = await Restore(checkpoint);
         var route = new List<string>();
-        foreach (uint action in result.Path)
+        foreach (uint action in bestPath)
         {
             route.Add(Describe(worker, action));
             await Execute(worker, action);
@@ -190,12 +253,21 @@ internal static class NativeBenchmark
             throw new InvalidOperationException("Best route score did not reproduce.");
         WorkerRuntime.Active = false;
         NonInteractiveMode.AutoSlayerCheck = () => false;
-        var reference = await Restore(checkpoint, new Dictionary<string, double>());
-        foreach (uint action in result.Path) await Execute(reference, action);
+        var reference = await Restore(checkpoint);
+        foreach (uint action in bestPath) await Execute(reference, action);
         if (Fingerprint(reference) != workerResult || Score(reference) != result.Stats.BestScore)
             throw new InvalidOperationException("Search result diverges from normal official execution.");
         GD.Print($"[cvpp] SEARCH {result.Stats.Evaluated} nodes in {result.ElapsedMs:F1} ms: {string.Join(", ", route)}");
-        return new { horizon = "one player turn through enemy response", baseline, result, route, verified = true };
+        return new
+        {
+            horizon = "one player turn through enemy response",
+            baseline,
+            result,
+            route,
+            verified = true,
+            verified_nodes = expected.Count,
+            samples
+        };
     }
 
     private static uint[] Actions(RunState run)
@@ -242,7 +314,7 @@ internal static class NativeBenchmark
         return target == null ? card.Id.Entry : $"{card.Id.Entry}:{target.ModelId.Entry}";
     }
 
-    private static async Task Execute(RunState run, uint token)
+    private static async ValueTask Execute(RunState run, uint token)
     {
         var player = run.Players.Single();
         bool Finished() => !CombatManager.Instance.IsInProgress && !Manager.ActionExecutor.IsRunning
@@ -272,9 +344,16 @@ internal static class NativeBenchmark
             + player.Creature.CurrentHp * 1_000_000L - enemyHp;
     }
 
-    private static async Task<RunState> Restore(byte[] checkpoint, Dictionary<string, double> timings)
+    private static async ValueTask<RunState> Restore(byte[] checkpoint, Dictionary<string, double>? timings = null)
     {
-        var timer = Stopwatch.StartNew();
+        long started = Stopwatch.GetTimestamp();
+        void Mark(string stage)
+        {
+            if (timings == null) return;
+            long now = Stopwatch.GetTimestamp();
+            timings[stage] = Stopwatch.GetElapsedTime(started, now).TotalMilliseconds;
+            started = now;
+        }
         if (SaveManager.Instance.CurrentRunSaveTask is { } task) await task;
         Manager.CleanUp();
         if (WorkerRuntime.Active && NRun.Instance != null)
@@ -285,37 +364,32 @@ internal static class NativeBenchmark
         if (WorkerRuntime.Active)
             NGame.Instance!.SetScreenShakeTarget(NGame.Instance.RootSceneContainer.CurrentScene!);
         TestMode.IsOn = WorkerRuntime.Active;
-        timings["cleanup_ms"] = timer.Elapsed.TotalMilliseconds;
-        timer.Restart();
+        Mark("cleanup_ms");
         var reader = new PacketReader();
         reader.Reset(checkpoint);
         var replay = reader.Read<CombatReplay>();
         var save = replay.serializableRun;
         var run = RunState.FromSerializable(save);
-        timings["deserialize_ms"] = timer.Elapsed.TotalMilliseconds;
-        timer.Restart();
+        Mark("deserialize_ms");
         await Manager.SetUpSavedSingleplayer(run, save);
         if (WorkerRuntime.Active)
         {
             Manager.CombatReplayWriter.IsEnabled = false;
             Manager.ChecksumTracker.IsEnabled = false;
         }
-        timings["setup_and_save_ms"] = timer.Elapsed.TotalMilliseconds;
-        timer.Restart();
+        Mark("setup_and_save_ms");
         Manager.Launch();
         if (!WorkerRuntime.Active) NGame.Instance!.RootSceneContainer.SetCurrentScene(NRun.Create(run));
-        timings["scene_ms"] = timer.Elapsed.TotalMilliseconds;
-        timer.Restart();
+        Mark("scene_ms");
         await Manager.GenerateMap();
         Manager.ActionQueueSet.FastForwardNextActionId(replay.nextActionId);
         Manager.ActionQueueSynchronizer.FastForwardHookId(replay.nextHookId);
         Manager.PlayerChoiceSynchronizer.FastForwardChoiceIds(replay.choiceIds);
         Manager.RewardsSetSynchronizer.FastForwardRewardIds(replay.rewardIds);
-        timings["map_ms"] = timer.Elapsed.TotalMilliseconds;
-        timer.Restart();
+        Mark("map_ms");
         await Manager.LoadIntoLatestMapCoord(AbstractRoom.FromSerializable(save.PreFinishedRoom, run));
         await Until(() => Stable(run), "restored combat");
-        timings["enter_combat_ms"] = timer.Elapsed.TotalMilliseconds;
+        Mark("enter_combat_ms");
         return run;
     }
 
@@ -350,16 +424,18 @@ internal static class NativeBenchmark
         return Convert.ToHexString(SHA256.HashData(writer.Buffer.AsSpan(0, writer.BytePosition)));
     }
 
-    private static async Task Until(Func<bool> ready, string stage)
+    private static async ValueTask Until(Func<bool> ready, string stage)
     {
         var timer = Stopwatch.StartNew();
         while (!ready())
         {
             if (timer.Elapsed.TotalSeconds > 30) throw new TimeoutException(stage);
+            WorkerRuntime.Pump();
+            if (ready()) break;
             await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
         }
     }
 
-    private sealed record Sample(bool Warmup, bool NonInteractive, bool Worker, bool Attack, double TotalMs, long ManagedBytes,
+    private sealed record Sample(bool Warmup, bool NonInteractive, bool Worker, bool PumpContinuations, bool Attack, double TotalMs, long ManagedBytes,
         Dictionary<string, double> Stages, List<string> Trajectory);
 }

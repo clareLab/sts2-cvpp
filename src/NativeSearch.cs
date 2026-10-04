@@ -15,7 +15,7 @@ internal sealed class SearchHandle : SafeHandleZeroOrMinusOneIsInvalid
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal readonly record struct SearchStats(uint Allocated, uint Evaluated, uint Bounded, uint BestFound, long BestScore);
+internal readonly record struct SearchStats(uint Allocated, uint Evaluated, uint Bounded, uint BestFound, long BestScore, ulong MemoryBytes);
 
 internal sealed class NativeSearch : IDisposable
 {

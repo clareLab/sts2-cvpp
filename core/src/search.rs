@@ -8,18 +8,19 @@ const CAPACITY: i32 = -3;
 const PANIC: i32 = -4;
 
 struct Node {
-    parent: u32,
     action: u32,
     depth: u16,
 }
 
 struct Search {
-    nodes: Vec<Node>,
-    frontier: Vec<u32>,
-    current: Option<u32>,
-    best: Option<(i64, u32)>,
+    frontier: Vec<Node>,
+    path: [u32; 64],
+    best_path: [u32; 64],
+    current: Option<u16>,
+    best: Option<(i64, u16)>,
     limit: u32,
     depth_limit: u16,
+    allocated: u32,
     evaluated: u32,
     bounded: bool,
     poisoned: bool,
@@ -30,38 +31,34 @@ impl Search {
         if !(1..=1_000_000).contains(&limit) || !(1..=64).contains(&depth_limit) {
             return None;
         }
-        let mut nodes = Vec::with_capacity(limit as usize);
-        nodes.push(Node {
-            parent: 0,
+        let mut frontier = Vec::with_capacity(limit.min(64) as usize);
+        frontier.push(Node {
             action: 0,
             depth: 0,
         });
-        let mut frontier = Vec::with_capacity(limit as usize);
-        frontier.push(0);
         Some(Self {
-            nodes,
             frontier,
+            path: [0; 64],
+            best_path: [0; 64],
             current: None,
             best: None,
             limit,
             depth_limit,
+            allocated: 1,
             evaluated: 0,
             bounded: false,
             poisoned: false,
         })
     }
 
-    fn path(&self, id: u32, output: &mut [u32]) -> i32 {
-        let depth = self.nodes[id as usize].depth;
+    fn best(&self, output: &mut [u32]) -> i32 {
+        let Some((_, depth)) = self.best else {
+            return DONE;
+        };
         if output.len() < usize::from(depth) {
             return CAPACITY;
         }
-        let mut cursor = id;
-        for index in (0..usize::from(depth)).rev() {
-            let node = &self.nodes[cursor as usize];
-            output[index] = node.action;
-            cursor = node.parent;
-        }
+        output[..usize::from(depth)].copy_from_slice(&self.best_path[..usize::from(depth)]);
         i32::from(depth)
     }
 
@@ -69,48 +66,51 @@ impl Search {
         if self.current.is_some() || self.poisoned {
             return INVALID;
         }
-        let Some(&id) = self.frontier.last() else {
+        let Some(node) = self.frontier.last() else {
             return DONE;
         };
-        let result = self.path(id, output);
-        if result >= 0 {
-            self.frontier.pop();
-            self.current = Some(id);
+        let depth = node.depth;
+        if output.len() < usize::from(depth) {
+            return CAPACITY;
         }
-        result
+        if depth > 0 {
+            self.path[usize::from(depth) - 1] = node.action;
+        }
+        output[..usize::from(depth)].copy_from_slice(&self.path[..usize::from(depth)]);
+        self.frontier.pop();
+        self.current = Some(depth);
+        i32::from(depth)
     }
 
     fn observe(&mut self, score: i64, solution: bool, actions: &[u32]) -> i32 {
         if self.poisoned || (solution && !actions.is_empty()) {
             return INVALID;
         }
-        let Some(id) = self.current.take() else {
+        let Some(depth) = self.current.take() else {
             return INVALID;
         };
         self.evaluated += 1;
-        let depth = self.nodes[id as usize].depth;
         if solution
-            && self.best.is_none_or(|(best, previous)| {
-                score > best || (score == best && depth < self.nodes[previous as usize].depth)
-            })
+            && self
+                .best
+                .is_none_or(|(best, previous)| score > best || (score == best && depth < previous))
         {
-            self.best = Some((score, id));
+            self.best = Some((score, depth));
+            self.best_path[..usize::from(depth)].copy_from_slice(&self.path[..usize::from(depth)]);
         }
-        let remaining = self.limit as usize - self.nodes.len();
+        let remaining = (self.limit - self.allocated) as usize;
         let count = if depth < self.depth_limit {
             actions.len().min(remaining)
         } else {
             0
         };
         self.bounded |= count < actions.len();
+        self.allocated += u32::try_from(count).unwrap_or(self.limit);
         for &action in actions[..count].iter().rev() {
-            let next = u32::try_from(self.nodes.len()).unwrap_or(self.limit);
-            self.nodes.push(Node {
-                parent: id,
+            self.frontier.push(Node {
                 action,
                 depth: depth + 1,
             });
-            self.frontier.push(next);
         }
         0
     }
@@ -133,6 +133,7 @@ struct SearchStats {
     bounded: u32,
     best_found: u32,
     best_score: i64,
+    memory_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -193,7 +194,7 @@ unsafe extern "C" fn cvpp_search_best(search: *mut Search, output: *mut u32, cap
         return INVALID;
     }
     let output = unsafe { slice::from_raw_parts_mut(output, capacity as usize) };
-    search.guard(|search| search.best.map_or(DONE, |(_, id)| search.path(id, output)))
+    search.guard(|search| search.best(output))
 }
 
 #[unsafe(no_mangle)]
@@ -202,11 +203,12 @@ unsafe extern "C" fn cvpp_search_stats(search: *const Search) -> SearchStats {
         return SearchStats::default();
     };
     SearchStats {
-        allocated: u32::try_from(search.nodes.len()).unwrap_or(search.limit),
+        allocated: search.allocated,
         evaluated: search.evaluated,
         bounded: u32::from(search.bounded),
         best_found: u32::from(search.best.is_some()),
         best_score: search.best.map_or(i64::MIN, |(score, _)| score),
+        memory_bytes: (size_of::<Search>() + search.frontier.capacity() * size_of::<Node>()) as u64,
     }
 }
 
@@ -254,9 +256,9 @@ mod tests {
             };
             assert_eq!(search.observe(score, solution, actions), 0);
         }
-        let (score, id) = search.best.unwrap();
+        let (score, _) = search.best.unwrap();
         assert_eq!(score, 12);
-        assert_eq!(search.path(id, &mut path), 2);
+        assert_eq!(search.best(&mut path), 2);
         assert_eq!(&path[..2], &[10, 12]);
         assert_eq!(search.evaluated, 5);
         assert!(!search.bounded);
@@ -273,7 +275,7 @@ mod tests {
         assert_eq!(search.observe(-10, true, &[]), 0);
         assert_eq!(search.next(&mut path), DONE);
         assert!(search.bounded);
-        assert_eq!(search.nodes.len(), 2);
+        assert_eq!(search.allocated, 2);
         assert_eq!(search.best.unwrap().0, -10);
     }
 
@@ -309,8 +311,113 @@ mod tests {
         search.observe(5, true, &[]);
         assert_eq!(search.next(&mut path), DONE);
         assert!(search.bounded);
-        let (_, best) = search.best.unwrap();
-        assert_eq!(search.path(best, &mut path), 1);
+        assert_eq!(search.best(&mut path), 1);
         assert_eq!(path[0], 2);
+    }
+
+    #[test]
+    fn wide_and_deep_traversals_match_recursive_reference() {
+        #[derive(Default)]
+        struct Reference {
+            generated: u32,
+            evaluated: u32,
+            bounded: bool,
+            best: Option<(i64, Vec<u32>)>,
+            paths: Vec<Vec<u32>>,
+        }
+
+        fn fixture(seed: u32, path: &[u32]) -> (i64, bool, Vec<u32>) {
+            let hash = path.iter().fold(seed, |hash, action| {
+                hash.wrapping_mul(1_664_525).wrapping_add(*action)
+            });
+            let solution = hash % 7 == 0 || path.len() >= 5;
+            let actions = if solution {
+                vec![]
+            } else {
+                (0..hash % 4).map(|index| index * 13 + 1).collect()
+            };
+            (i64::from(hash % 31) - 15, solution, actions)
+        }
+
+        fn visit(state: &mut Reference, seed: u32, limit: u32, depth: usize, path: &mut Vec<u32>) {
+            state.evaluated += 1;
+            state.paths.push(path.clone());
+            let (score, solution, actions) = fixture(seed, path);
+            if solution
+                && state.best.as_ref().is_none_or(|(best, previous)| {
+                    score > *best || (score == *best && path.len() < previous.len())
+                })
+            {
+                state.best = Some((score, path.clone()));
+            }
+            let count = if path.len() < depth {
+                actions.len().min((limit - state.generated) as usize)
+            } else {
+                0
+            };
+            state.bounded |= count < actions.len();
+            state.generated += u32::try_from(count).unwrap();
+            for action in actions.into_iter().take(count) {
+                path.push(action);
+                visit(state, seed, limit, depth, path);
+                path.pop();
+            }
+        }
+
+        for seed in 0..32 {
+            for limit in [1, 2, 3, 8, 16, 127, 2048] {
+                for depth in [1, 3, 6] {
+                    let mut reference = Reference {
+                        generated: 1,
+                        ..Reference::default()
+                    };
+                    visit(&mut reference, seed, limit, depth.into(), &mut vec![]);
+                    let mut search = Search::new(limit, depth).unwrap();
+                    let mut path = [0; 64];
+                    for expected in &reference.paths {
+                        let length = search.next(&mut path);
+                        assert_eq!(usize::try_from(length).unwrap(), expected.len());
+                        assert_eq!(&path[..expected.len()], expected);
+                        let (score, solution, actions) = fixture(seed, expected);
+                        assert_eq!(search.observe(score, solution, &actions), 0);
+                    }
+                    assert_eq!(search.next(&mut path), DONE);
+                    assert_eq!(search.allocated, reference.generated);
+                    assert_eq!(search.evaluated, reference.evaluated);
+                    assert_eq!(search.bounded, reference.bounded);
+                    if let Some((score, expected)) = reference.best {
+                        assert_eq!(search.best.unwrap().0, score);
+                        assert_eq!(
+                            usize::try_from(search.best(&mut path)).unwrap(),
+                            expected.len()
+                        );
+                        assert_eq!(&path[..expected.len()], expected);
+                    } else {
+                        assert_eq!(search.best(&mut path), DONE);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_budget_keeps_only_pending_branches_in_memory() {
+        let mut search = Search::new(1_000_000, 18).unwrap();
+        let mut path = [0; 18];
+        while let length @ 0.. = search.next(&mut path) {
+            let length = usize::try_from(length).unwrap();
+            let score = path[..length]
+                .iter()
+                .fold(0, |score, action| score * 2 + i64::from(*action));
+            let actions: &[u32] = if length == 18 { &[] } else { &[0, 1] };
+            assert_eq!(search.observe(score, length == 18, actions), 0);
+        }
+        assert_eq!(search.evaluated, 524_287);
+        assert_eq!(search.best.unwrap().0, 262_143);
+        assert_eq!(search.best(&mut path), 18);
+        assert_eq!(path, [1; 18]);
+        assert!(!search.bounded);
+        let stats = unsafe { cvpp_search_stats(&raw const search) };
+        assert!(stats.memory_bytes < 2048);
     }
 }

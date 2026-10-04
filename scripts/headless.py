@@ -86,7 +86,7 @@ def main():
                 start_new_session=True,
             )
             try:
-                status = process.wait(timeout=120)
+                status = process.wait(timeout=300 if args.benchmark else 120)
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
