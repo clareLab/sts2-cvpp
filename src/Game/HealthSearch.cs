@@ -11,7 +11,7 @@ internal static class HealthSearch
 
     internal static async Task<SolveResult> Run(NativeCombat combat, Func<ValueTask<RunState>> restore,
         SolveOptions options, Action<SolveProgress>? progress = null, CancellationToken cancellationToken = default, uint[]? incumbent = null,
-        bool cache = true)
+        bool cache = true, SearchPause? pause = null)
     {
         options.Validate();
         using var planner = new NativePlanner(options.Nodes, options.Depth);
@@ -29,17 +29,34 @@ internal static class HealthSearch
         long lastProgress = -250;
         bool changed = false;
         bool Expired() => cancellationToken.IsCancellationRequested || (options.Seconds > 0 && timer.Elapsed.TotalSeconds >= options.Seconds);
-        async Task Publish()
+        async Task Publish(bool paused = false)
         {
             if (changed && best != null)
             {
                 plan = await Describe(combat, cursor, best, bestHp);
                 changed = false;
             }
+            if (paused) timer.Stop();
             var stats = planner.Stats;
-            progress?.Invoke(new SolveProgress(stats.Simulations, stats.Nodes, plan?.FinalHp, timer.Elapsed.TotalMilliseconds, plan));
+            progress?.Invoke(new SolveProgress(stats.Simulations, stats.Nodes, plan?.FinalHp, timer.Elapsed.TotalMilliseconds, plan, Paused: paused));
             lastProgress = timer.ElapsedMilliseconds;
         }
+        async ValueTask WaitIfPaused()
+        {
+            if (pause?.Paused != true) return;
+            try
+            {
+                while (pause.Paused && !cancellationToken.IsCancellationRequested)
+                {
+                    await Publish(paused: true);
+                    await pause.Wait(cancellationToken);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            finally { timer.Start(); }
+            await Publish();
+        }
+        await WaitIfPaused();
         if (incumbent is { Length: > 0 })
         {
             if (incumbent.Length > options.Depth || incumbent.Any(action => (action & 0xc0000000) == NativeCombat.Potion))
@@ -53,6 +70,8 @@ internal static class HealthSearch
         }
         while (!Expired())
         {
+            await WaitIfPaused();
+            if (Expired()) break;
             int length = planner.Next(buffer);
             if (length < 0) break;
             var observation = await tree.MoveTo(buffer.AsMemory(0, length));
@@ -62,6 +81,8 @@ internal static class HealthSearch
             bool greedy = planner.Stats.Simulations == 0;
             while (!observation.Terminal && steps < options.Depth && !Expired())
             {
+                await WaitIfPaused();
+                if (Expired()) break;
                 var available = observation.Actions;
                 if (available.Length == 0) break;
                 int index = greedy || random.NextDouble() < .8 ? 0 : random.Next(available.Length);

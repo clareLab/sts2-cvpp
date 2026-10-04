@@ -69,7 +69,7 @@ def main():
     parser.add_argument("--product-only", action="store_true")
     parser.add_argument("--worker-benchmark", action="store_true")
     parser.add_argument("--fixed-work", action="store_true")
-    parser.add_argument("--exit", choices=["startup", "search", "normal", "menu"])
+    parser.add_argument("--exit", choices=["startup", "search", "paused", "normal", "menu"])
     args = parser.parse_args()
     if args.snapshot_probe and any(
         (

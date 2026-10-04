@@ -58,9 +58,12 @@ internal static class WorkerHost
             { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
             using var lifetime = new CancellationTokenSource();
             CancellationTokenSource? search = null;
+            SearchPause? pause = null;
             var gate = new object();
             string? activeId = null;
             string? cancelledId = null;
+            string? pausedId = null;
+            bool paused = false;
             var read = Task.Run(async () =>
             {
                 try
@@ -74,6 +77,15 @@ internal static class WorkerHost
                             {
                                 cancelledId = message.Id;
                                 if (activeId == message.Id) search?.Cancel();
+                            }
+                        }
+                        else if (message.Kind is "pause" or "resume")
+                        {
+                            lock (gate)
+                            {
+                                pausedId = message.Id;
+                                paused = message.Kind == "pause";
+                                if (activeId == message.Id) pause?.Set(paused);
                             }
                         }
                         else await incoming.Writer.WriteAsync(message, lifetime.Token);
@@ -101,6 +113,8 @@ internal static class WorkerHost
                     {
                         activeId = message.Id;
                         search = cancellation;
+                        pause = new SearchPause();
+                        if (pausedId == activeId) pause.Set(paused);
                         if (cancelledId == activeId) cancellation.Cancel();
                     }
                     await using var combat = new NativeCombat { Mode = CombatExecution.Worker };
@@ -108,7 +122,11 @@ internal static class WorkerHost
                     {
                         var checkpoint = CombatCheckpoint.Import(message.Request.Position.Root);
                         var result = await HealthSearch.Run(combat, () => message.Request.Position.Restore(combat, checkpoint), message.Request.Options,
-                            progress => outgoing.Writer.TryWrite(new WorkerMessage("progress", message.Id, Progress: progress)), cancellation.Token, message.Request.Incumbent);
+                            progress =>
+                            {
+                                Engine.MaxFps = progress.Paused ? 10 : 0;
+                                outgoing.Writer.TryWrite(new WorkerMessage("progress", message.Id, Progress: progress));
+                            }, cancellation.Token, message.Request.Incumbent, pause: pause);
                         outgoing.Writer.TryWrite(new WorkerMessage("result", message.Id, Result: result));
                     }
                     catch (Exception error)
@@ -117,7 +135,7 @@ internal static class WorkerHost
                         outgoing.Writer.TryWrite(new WorkerMessage("error", message.Id, Error: error.Message));
                         break;
                     }
-                    finally { lock (gate) { search = null; activeId = null; } Engine.MaxFps = 10; }
+                    finally { lock (gate) { search = null; pause = null; activeId = null; } Engine.MaxFps = 10; }
                 }
             }
             finally

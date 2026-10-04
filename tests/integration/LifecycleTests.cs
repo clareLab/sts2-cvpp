@@ -57,6 +57,11 @@ internal static class LifecycleTests
         await ProductTests.Until(() => mode == "startup" ? SolverController.WorkerPid != null
             : SolverController.Progress != null || !SolverController.Busy, "exit probe", 100);
         int worker = SolverController.WorkerPid ?? throw new InvalidOperationException(SolverController.Error ?? "Missing worker.");
+        if (mode == "paused")
+        {
+            SolverController.TogglePause();
+            await ProductTests.Until(() => SolverController.Progress?.Paused == true, "paused exit probe", 15);
+        }
         string sandbox = Directory.GetDirectories(Cache, "cvpp-*").Single();
         string path = ProjectSettings.GlobalizePath("user://cvpp-exit.json");
         File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(new { parent = System.Environment.ProcessId, worker, sandbox }));

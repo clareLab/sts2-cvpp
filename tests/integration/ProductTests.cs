@@ -42,7 +42,14 @@ internal static class ProductTests
             await Task.Delay(300);
             await Screenshot("loading");
         }
-        await Until(() => SolverController.Preview != null || !SolverController.Busy, "live preview", 100);
+        if (characterId == "IRONCLAD")
+        {
+            SolverController.TogglePause();
+            await Until(() => SolverController.Progress?.Paused == true || !SolverController.Busy, "pause during startup", 100);
+            if (!SolverController.Paused) throw new InvalidOperationException("Startup pause discarded the search.");
+            SolverController.Solve();
+        }
+        await Until(() => SolverController.Progress is { Paused: false } && SolverController.Preview != null || !SolverController.Busy, "live preview", 100);
         if (!SolverController.Busy || SolverController.Preview is not { } preview
             || preview.Steps.Sum(action => action.HpDelta) != preview.FinalHp - run.Players[0].Creature.CurrentHp)
             throw new InvalidOperationException("A complete route with HP deltas was not published during search.");
@@ -57,6 +64,7 @@ internal static class ProductTests
         if (Tree.Root.FindChild("CvppSolve", true, false) is not Button { Disabled: false, ButtonPressed: true } solveButton
             || !solveButton.GetNode<TextureRect>("Pause").Visible || solveButton.GetNode<TextureRect>("Icon").Visible)
             throw new InvalidOperationException("Solve did not become the pause control during search.");
+        object pause = await PauseResume(run);
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
         {
             Click("CvppRouteToggle");
@@ -105,30 +113,39 @@ internal static class ProductTests
         before = CombatFingerprint.Capture(run);
         HudTests.Health(SolverController.Plan, SolverController.Step);
         int previousHp = plan.FinalHp;
-        SolverController.Seconds = 0;
+        SolverController.Seconds = 3;
         timing.Restart();
         Click("CvppSolve");
         await Until(() => SolverController.Progress?.BestHp != null || !SolverController.Busy, "warm worker", 30);
         SolverHud.Tick();
         Click("CvppSolve");
-        await Until(() => !SolverController.Busy, "cancel search", 15);
-        plan = SolverController.Plan ?? throw new InvalidOperationException(SolverController.Error ?? "Cancellation discarded the winning route.");
+        await Until(() => SolverController.Progress?.Paused == true || !SolverController.Busy, "pause search", 15);
+        if (!SolverController.Paused) throw new InvalidOperationException("Search ended instead of pausing.");
+        if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) await Screenshot("paused");
+        Click("CvppSolve");
+        await Until(() => !SolverController.Busy, "resume search", 15);
+        plan = SolverController.Plan ?? throw new InvalidOperationException(SolverController.Error ?? "Resuming discarded the winning route.");
         if (plan.FinalHp < previousHp) throw new InvalidOperationException("Searching again lost a better route.");
         double cancelledSolveMs = timing.Elapsed.TotalMilliseconds;
         if (SolverController.Error != null || CombatFingerprint.Capture(run) != before)
             throw new InvalidOperationException("Solving the current turn mutated the live game.");
-        if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) await Screenshot("paused");
         if (characterId == "IRONCLAD")
         {
+            SolverController.Seconds = 0;
             Click("CvppSolve");
             await Until(() => SolverController.Preview != null || !SolverController.Busy, "reset active search", 30);
             if (!SolverController.Busy) throw new InvalidOperationException("Reset probe ended before reset.");
+            Click("CvppSolve");
+            await Until(() => SolverController.Progress?.Paused == true, "pause before reset", 15);
             await Reset(run);
             await LifecycleTests.Released(worker);
+            SolverController.Seconds = 2;
             Click("CvppSolve");
             await Until(() => SolverController.Preview != null || !SolverController.Busy, "solve after reset", 100);
             if (SolverController.Busy) Click("CvppSolve");
-            await Until(() => !SolverController.Busy, "pause after reset", 15);
+            await Until(() => SolverController.Progress?.Paused == true || !SolverController.Busy, "pause after reset", 15);
+            if (SolverController.Paused) Click("CvppStep");
+            await Until(() => !SolverController.Busy, "execute paused route after reset", 15);
             if (SolverController.Plan == null || SolverController.Error != null)
                 throw new InvalidOperationException(SolverController.Error ?? "Solve after reset failed.");
             worker = SolverController.WorkerPid ?? throw new InvalidOperationException("Reset did not allow a new worker.");
@@ -162,7 +179,45 @@ internal static class ProductTests
         if (Tree.Root.FindChild("CvppSteps", true, false) is not Godot.Tree steps || steps.GetRoot() != null)
             throw new InvalidOperationException("Hidden route retained tree items.");
         GD.Print($"[cvpp] PRODUCT {plan.FinalHp} HP, {plan.Steps.Length} steps; step, turn, cancellation, current-position replay and takeover verified");
-        return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs, memory };
+        return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs, pause, memory };
+    }
+
+    private static async Task<object> PauseResume(RunState run)
+    {
+        var samples = new List<object>();
+        int? worker = SolverController.WorkerPid;
+        string before = CombatFingerprint.Capture(run);
+        for (int cycle = 0; cycle < 2; cycle++)
+        {
+            var prior = SolverController.Progress!;
+            Click("CvppSolve");
+            await Until(() => SolverController.Progress?.Paused == true || !SolverController.Busy, "pause acknowledgement", 15);
+            var frozen = SolverController.Progress!;
+            if (!SolverController.Paused || frozen.Simulations < prior.Simulations || frozen.Nodes < prior.Nodes
+                || frozen.ElapsedMs < prior.ElapsedMs || frozen.BestHp < prior.BestHp)
+                throw new InvalidOperationException("Pausing discarded search progress.");
+            using var process = Process.GetProcessById(worker!.Value);
+            double cpu = process.TotalProcessorTime.TotalMilliseconds;
+            SolverController.IdleMilliseconds = 1;
+            try { await Task.Delay(1200); }
+            finally { SolverController.IdleMilliseconds = 120_000; }
+            process.Refresh();
+            double pausedCpuMs = process.TotalProcessorTime.TotalMilliseconds - cpu;
+            var still = SolverController.Progress!;
+            if (still.Simulations != frozen.Simulations || still.Nodes != frozen.Nodes || still.ElapsedMs != frozen.ElapsedMs
+                || still.Plan?.FinalHp != frozen.Plan?.FinalHp || !still.Plan!.Steps.SequenceEqual(frozen.Plan!.Steps)
+                || SolverController.SimulationsPerSecond != 0 || SolverController.WorkerPid != worker)
+                throw new InvalidOperationException("Paused search kept running or lost its worker.");
+            Click("CvppSolve");
+            await Until(() => SolverController.Progress is { Paused: false } next && next.Simulations > frozen.Simulations
+                || !SolverController.Busy, "resume progress", 15);
+            var resumed = SolverController.Progress!;
+            if (resumed.Simulations <= frozen.Simulations || resumed.Nodes < frozen.Nodes || resumed.BestHp < frozen.BestHp
+                || resumed.ElapsedMs < frozen.ElapsedMs || SolverController.WorkerPid != worker || CombatFingerprint.Capture(run) != before)
+                throw new InvalidOperationException("Resuming restarted search or changed the live combat.");
+            samples.Add(new { frozen.Simulations, frozen.Nodes, frozen.ElapsedMs, resumed = resumed.Simulations, pausedCpuMs });
+        }
+        return samples;
     }
 
     private static async Task Reset(RunState run)

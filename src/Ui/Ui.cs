@@ -110,7 +110,7 @@ internal static class Ui
 
     internal static Button Command(string path, string tooltip, string name, Action action, bool flip = false)
     {
-        var button = Icon(path, tooltip, name, () => { if (SolverController.Busy) SolverController.Stop(); else action(); }, flip);
+        var button = Icon(path, tooltip, name, () => { if (SolverController.Busy && !SolverController.Paused) SolverController.TogglePause(); else action(); }, flip);
         button.ToggleMode = true;
         button.SetMeta("cvpp_tooltip", tooltip);
         var pause = Image(Pause);

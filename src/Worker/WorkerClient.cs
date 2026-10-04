@@ -19,6 +19,8 @@ internal sealed class WorkerClient(string executable, string package, string cac
     private volatile bool _disposed;
     private volatile int _processId;
     private volatile int _supervisorId;
+    private volatile string? _requestId;
+    private volatile bool _paused;
     internal int? ProcessId { get { int id = _processId; return id == 0 ? null : id; } }
 
     private async Task Start(CancellationToken token)
@@ -145,9 +147,16 @@ internal sealed class WorkerClient(string executable, string package, string cac
             ObjectDisposedException.ThrowIf(_disposed, this);
             await Start(token).ConfigureAwait(false);
             string id = Guid.NewGuid().ToString("N");
-            await Send(new WorkerMessage("solve", id, request), token).ConfigureAwait(false);
+            await _write.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                _requestId = id;
+                await Wire.Write(_pipe!, new WorkerMessage("solve", id, request), token).ConfigureAwait(false);
+                if (_paused) await Wire.Write(_pipe!, new WorkerMessage("pause", id), token).ConfigureAwait(false);
+            }
+            finally { _write.Release(); }
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, memoryLimit.Token);
-            deadline.CancelAfter(TimeSpan.FromSeconds(request.Options.Seconds + 45));
+            deadline.CancelAfter(TimeSpan.FromSeconds(45));
             Task cancel = Task.CompletedTask;
             using var registration = token.Register(() => cancel = Cancel(id, deadline));
             try
@@ -158,7 +167,7 @@ internal sealed class WorkerClient(string executable, string package, string cac
                     if (message.Id != id) throw new InvalidDataException("Stale worker reply.");
                     if (message.Kind == "progress" && message.Progress != null)
                     {
-                        if (request.Options.Seconds == 0 && !token.IsCancellationRequested) deadline.CancelAfter(TimeSpan.FromSeconds(45));
+                        if (!token.IsCancellationRequested) deadline.CancelAfter(TimeSpan.FromSeconds(45));
                         latest = message.Progress with { MemoryBytes = Interlocked.Read(ref memory) };
                         progress?.Report(latest);
                     }
@@ -173,7 +182,7 @@ internal sealed class WorkerClient(string executable, string package, string cac
         {
             await Stop().ConfigureAwait(false);
             progress?.Report((latest ?? new SolveProgress(0, 0, null, 0)) with { MemoryBytes = Interlocked.Read(ref memory) });
-            return new SolveResult(latest?.Plan, default, clock.Elapsed.TotalMilliseconds, "memory_limit", 0, 0);
+            return new SolveResult(latest?.Plan, default, latest?.ElapsedMs ?? clock.Elapsed.TotalMilliseconds, "memory_limit", 0, 0);
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
@@ -184,9 +193,22 @@ internal sealed class WorkerClient(string executable, string package, string cac
         catch { await Stop(preserveLogs: true).ConfigureAwait(false); throw; }
         finally
         {
+            _requestId = null;
             try { monitorStop.Cancel(); await monitor.ConfigureAwait(false); }
             finally { _operation.Release(); }
         }
+    }
+
+    internal async Task SetPaused(bool paused)
+    {
+        _paused = paused;
+        await _write.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+        try
+        {
+            if (_requestId is { } id)
+                await Wire.Write(_pipe!, new WorkerMessage(_paused ? "pause" : "resume", id), _lifetime.Token).ConfigureAwait(false);
+        }
+        finally { _write.Release(); }
     }
 
     private async Task MonitorMemory(int limit, Action<long> update, CancellationTokenSource exceeded, CancellationToken token)

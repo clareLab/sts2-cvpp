@@ -27,10 +27,13 @@ internal static class SolverController
     private static object? _room;
     private static int _generation;
     private static ulong _idleSince;
+    private static bool _pauseRequested;
+    private static string? _positionState;
     internal static ulong IdleMilliseconds { get; set; } = 120_000;
     internal static int? WorkerPid => _worker?.ProcessId;
     internal static bool WorkerReleased => _worker == null && _release.IsCompleted;
     internal static bool Busy => _operation is { IsCompleted: false };
+    internal static bool Paused => Busy && _pauseRequested;
     internal static bool Executing { get; private set; }
     internal static bool Resetting { get; private set; }
     internal static ExecutionRange? ActiveRange { get; private set; }
@@ -45,7 +48,7 @@ internal static class SolverController
     internal static int SearchSeconds { get; private set; }
     internal static int MemoryMiB { get; set; } = 2048;
     internal static double Elapsed => Clock.Elapsed.TotalSeconds;
-    internal static double SimulationsPerSecond => Busy && !Executing && !Resetting ? Rate.PerSecond : 0;
+    internal static double SimulationsPerSecond => Busy && !Paused && Progress?.Paused != true && !Executing && !Resetting ? Rate.PerSecond : 0;
     internal static bool Ready => RunManager.Instance.DebugOnlyGetState() is { } run && run.Players.Count == 1
         && RunManager.Instance.NetService?.Type == NetGameType.Singleplayer && NativeCombat.IsStable(run);
 
@@ -71,7 +74,7 @@ internal static class SolverController
             var run = RunManager.Instance.DebugOnlyGetState();
             if (run != _run || run?.CurrentRoom != _room)
             {
-                Stop();
+                Cancel();
                 _generation++;
                 ReleaseWorker();
                 _run = run;
@@ -97,7 +100,7 @@ internal static class SolverController
         {
             Error = error.Message;
             GD.PrintErr("[cvpp] UI: " + error);
-            Stop();
+            Cancel();
             _generation++;
             ReleaseWorker();
             Plan = Preview = null;
@@ -108,7 +111,13 @@ internal static class SolverController
         }
     }
 
-    internal static void Solve(bool takeOver = false) => Launch(async () =>
+    internal static void Solve(bool takeOver = false)
+    {
+        if (Paused) { TogglePause(); return; }
+        StartSolve(takeOver);
+    }
+
+    private static void StartSolve(bool takeOver) => Launch(async () =>
     {
         if (!Ready) throw new InvalidOperationException("Wait for your turn and finish any open card selection.");
         int generation = _generation;
@@ -118,8 +127,10 @@ internal static class SolverController
         Preview = null;
         StopReason = null;
         SearchSeconds = Seconds;
+        _positionState = null;
         Status = "Loading";
         var position = await CombatPosition.Capture();
+        _positionState = position.State;
         await _release;
         if (generation != _generation) return;
         _cancel!.Token.ThrowIfCancellationRequested();
@@ -128,6 +139,7 @@ internal static class SolverController
         if (incumbent == null) { Plan = null; Step = 0; }
         _worker ??= new WorkerClient(OS.GetExecutablePath(), Path.GetDirectoryName(typeof(Entry).Assembly.Location)!,
             ProjectSettings.GlobalizePath("user://cvpp-workers"), WorkerEnvironment.Capture());
+        await _worker.SetPaused(_pauseRequested);
         bool acceptingProgress = true;
         var updates = new Progress<SolveProgress>(progress =>
         {
@@ -136,7 +148,7 @@ internal static class SolverController
             Rate.Observe(progress.Simulations, progress.ElapsedMs);
             if (progress.Plan is { } preview && (Preview == null || preview.FinalHp > Preview.FinalHp
                 || (preview.FinalHp == Preview.FinalHp && preview.Steps.Length < Preview.Steps.Length))) Preview = preview;
-            Status = "Searching";
+            Status = progress.Paused ? _pauseRequested ? "Paused" : "Resuming" : _pauseRequested ? "Pausing" : "Searching";
         });
         SolveResult result;
         try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(SearchSeconds, Nodes: 1_000_000, Depth: 256, MemoryMiB: MemoryMiB), incumbent), updates, _cancel!.Token); }
@@ -161,7 +173,7 @@ internal static class SolverController
             "memory_limit" => "Memory limit",
             "node_or_depth_limit" => "Search limit",
             "exhausted" => "Exhausted",
-            "cancelled" => "Paused",
+            "cancelled" => "Stopped",
             _ => "Stopped"
         };
         if (result.StopReason == "memory_limit") ReleaseWorker();
@@ -170,6 +182,23 @@ internal static class SolverController
 
     internal static void Play(ExecutionRange range)
     {
+        if (Paused)
+        {
+            if (ActiveRange == range) { TogglePause(); return; }
+            var pending = _operation!;
+            int generation = _generation;
+            Cancel();
+            _operation = Run(async () =>
+            {
+                await pending;
+                if (generation != _generation) return;
+                _cancel?.Dispose();
+                _cancel = new CancellationTokenSource();
+                ActiveRange = range;
+                await Execute(range);
+            }, generation);
+            return;
+        }
         if (Plan == null)
         {
             if (range == ExecutionRange.Combat) Solve(takeOver: true);
@@ -221,6 +250,7 @@ internal static class SolverController
         _cancel?.Dispose();
         _cancel = new CancellationTokenSource();
         ActiveRange = range;
+        _pauseRequested = false;
         Error = null;
         Clock.Restart();
         _operation = Run(action, _generation);
@@ -235,15 +265,45 @@ internal static class SolverController
             if (generation == _generation) { Status = "Error"; Error = error.Message; }
             GD.PrintErr("[cvpp] " + error);
         }
-        finally { Clock.Stop(); _idleSince = Time.GetTicksMsec(); }
+        finally { Clock.Stop(); _pauseRequested = false; _idleSince = Time.GetTicksMsec(); }
     }
 
-    internal static void Stop() => _cancel?.Cancel();
+    internal static void TogglePause()
+    {
+        if (!Busy || Resetting) return;
+        if (Executing) { Cancel(); return; }
+        if (_pauseRequested && (!Ready || _positionState != null && CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != _positionState))
+        {
+            Reset();
+            return;
+        }
+        _pauseRequested = !_pauseRequested;
+        Status = _pauseRequested ? "Pausing" : "Resuming";
+        if (_pauseRequested) Clock.Stop(); else Clock.Start();
+        if (_worker is { } worker) _ = SetPaused(worker, _pauseRequested, _generation);
+    }
+
+    private static async Task SetPaused(WorkerClient worker, bool paused, int generation)
+    {
+        try { await worker.SetPaused(paused); }
+        catch (Exception error)
+        {
+            if (generation != _generation) return;
+            Error = error.Message;
+            Cancel();
+        }
+    }
+
+    private static void Cancel()
+    {
+        _pauseRequested = false;
+        _cancel?.Cancel();
+    }
 
     internal static void Reset()
     {
         if (Resetting) return;
-        Stop();
+        Cancel();
         _generation++;
         Resetting = true;
         _operation = Clear(_operation);
@@ -267,6 +327,7 @@ internal static class SolverController
             Step = 0;
             Status = "Ready";
             ActiveRange = null;
+            _positionState = null;
             Clock.Reset();
             Resetting = false;
         }
@@ -274,13 +335,12 @@ internal static class SolverController
 
     internal static bool Input(InputEvent input)
     {
-        SolverHud.Pointer(input);
         return Executing && input is InputEventKey or InputEventJoypadButton or InputEventJoypadMotion;
     }
 
     private static void Shutdown()
     {
-        Stop();
+        Cancel();
         _worker?.Abort();
         _retiring?.Abort();
     }

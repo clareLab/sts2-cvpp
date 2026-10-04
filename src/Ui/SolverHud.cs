@@ -219,15 +219,6 @@ internal static class SolverHud
 
     internal static void Toggle() { if (_layer is { Visible: true }) Open(_route, toggle: true); }
 
-    internal static void Pointer(InputEvent input)
-    {
-        if (_layer is not { Visible: true } || input is not InputEventMouseButton { Pressed: true }) return;
-        var pointer = _toolbar.GetGlobalMousePosition();
-        if (!_toolbar.GetGlobalRect().HasPoint(pointer)
-            && (!_route.Visible || !_route.GetGlobalRect().HasPoint(pointer))
-            && (!_settings.Visible || !_settings.GetGlobalRect().HasPoint(pointer))) Close();
-    }
-
     internal static bool Close()
     {
         if (_layer is not { Visible: true } || (!_route.Visible && !_settings.Visible)) return false;
@@ -239,6 +230,7 @@ internal static class SolverHud
     {
         if (_layer == null) return;
         bool busy = SolverController.Busy;
+        bool paused = SolverController.Paused;
         bool searching = busy && !SolverController.Executing && !SolverController.Resetting;
         var plan = searching ? SolverController.Preview : SolverController.Plan;
         int step = searching ? 0 : SolverController.Step;
@@ -259,10 +251,10 @@ internal static class SolverHud
             _ => _solve
         };
         bool executable = ready && plan != null && step < plan.Steps.Length;
-        Ui.Running(_solve, active == _solve, active == _solve || (!busy && ready));
-        Ui.Running(_step, active == _step, active == _step || (!busy && executable));
-        Ui.Running(_turn, active == _turn, active == _turn || (!busy && executable));
-        Ui.Running(_auto, active == _auto, active == _auto || (!busy && ready && (plan == null || step < plan.Steps.Length)));
+        Ui.Running(_solve, active == _solve && !paused, active == _solve || (!busy && ready));
+        Ui.Running(_step, active == _step && !paused, active == _step || ((!busy || paused) && executable));
+        Ui.Running(_turn, active == _turn && !paused, active == _turn || ((!busy || paused) && executable));
+        Ui.Running(_auto, active == _auto && !paused, active == _auto || ((!busy || paused) && ready && (plan == null || step < plan.Steps.Length)));
         Ui.Enabled(_reset, !SolverController.Resetting && (busy || plan != null || SolverController.Progress != null || SolverController.Error != null));
         _timeBudget.Refresh(busy);
         _memoryBudget.Refresh(busy);
@@ -278,7 +270,7 @@ internal static class SolverHud
         if (_handleColor != handleColor) { _handleColor = handleColor; _handle.AddThemeColorOverride("font_color", handleColor); }
         var progress = SolverController.Progress;
         _progress.SelfModulate = busy ? Colors.White : Colors.Transparent;
-        _progress.Indeterminate = searching && (progress == null || SolverController.SearchSeconds == 0);
+        _progress.Indeterminate = searching && !paused && (progress == null || SolverController.SearchSeconds == 0);
         _progress.Value = SolverController.Executing && plan != null ? (double)step / plan.Steps.Length
             : searching && SolverController.SearchSeconds > 0 ? Math.Min(1, (progress?.ElapsedMs ?? 0) / (SolverController.SearchSeconds * 1000)) : 0;
         Layout();
