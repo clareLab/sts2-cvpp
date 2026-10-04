@@ -207,7 +207,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         return (potion, target);
     }
 
-    internal (CardModel Card, Creature? Target) Resolve(RunState run, uint token)
+    internal (CardModel Card, Creature? Target) Resolve(RunState run, uint token, bool validate = true)
     {
         Check(run);
         var player = run.Players.Single();
@@ -219,7 +219,7 @@ internal sealed class NativeCombat : IAsyncDisposable
             throw new InvalidOperationException("Search route references an unavailable card or target.");
         var card = hand[index];
         var target = targetIndex < 0 ? null : creatures[targetIndex];
-        if (!card.CanPlay() || !card.IsValidTarget(target))
+        if (validate && (!card.CanPlay() || !card.IsValidTarget(target)))
             throw new InvalidOperationException("Search route contains an illegal action.");
         return (card, target);
     }
@@ -305,7 +305,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         }
         await CleanUp();
         NonInteractiveMode.AutoSlayerCheck = Mode == CombatExecution.Reference ? static () => false : static () => true;
-        if (Mode == CombatExecution.Worker && NRun.Instance != null)
+        if (Mode == CombatExecution.Worker && (NRun.Instance != null || NGame.Instance!.RootSceneContainer.CurrentScene == null))
         {
             NGame.Instance!.RootSceneContainer.SetCurrentScene(new Control());
             await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);

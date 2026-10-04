@@ -29,4 +29,4 @@ for cvpp_file in cvpp.dll cvpp.json libcvpp_core.so cvpp-worker LICENSE; do
 done
 echo "Installed: $destination"
 if [[ "$cvpp_running" == true ]]; then echo 'Restart the game to load the installed version.'; fi
-echo 'Enable Combat Solver ++ in the game Mod menu. F10 opens the route; Esc stops the solver.'
+echo 'Enable Combat Solver ++ in the game Mod menu.'

@@ -66,11 +66,10 @@ internal static class Ui
         if (tree.GetNodeOrNull<Label>("CvppActionHeading") is { } heading)
         {
             var panel = tree.GetThemeStylebox("panel");
-            float left = panel.ContentMarginLeft + tree.GetColumnWidth(0) + tree.GetColumnWidth(1);
             float inset = 28 + tree.GetThemeConstant("h_separation") * 2;
             float height = tree.GetThemeFont("title_button_font").GetHeight(tree.GetThemeFontSize("title_button_font_size"))
                 + tree.GetThemeStylebox("title_button_normal").GetMinimumSize().Y;
-            heading.Position = new Vector2(left + inset, panel.ContentMarginTop);
+            heading.Position = new Vector2(RouteTextOffset(tree, 2), panel.ContentMarginTop);
             heading.Size = new Vector2(Math.Max(1, tree.GetColumnWidth(2) - inset), height);
         }
         if (tree.GetRoot() is not { } root) return;
@@ -98,6 +97,15 @@ internal static class Ui
         }
     }
 
+    internal static float RouteTextOffset(Tree tree, int column)
+    {
+        float left = tree.GetThemeStylebox("panel").ContentMarginLeft;
+        for (int index = 0; index < column; index++) left += tree.GetColumnWidth(index);
+        return column == 2 ? left + 28 + tree.GetThemeConstant("h_separation") * 2
+            : left + (tree.GetColumnWidth(column) - tree.GetThemeFont("title_button_font")
+                .GetStringSize(tree.GetColumnTitle(column), fontSize: tree.GetThemeFontSize("title_button_font_size")).X) / 2;
+    }
+
     internal static Button Icon(string path, string tooltip, string name, Action action, bool flip = false) => Icon(Texture(path), tooltip, name, action, flip);
 
     internal static Button Command(string path, string tooltip, string name, Action action, bool flip = false)
@@ -122,7 +130,7 @@ internal static class Ui
         {
             button.GetNode<TextureRect>("Icon").Visible = !active;
             pause.Visible = active;
-            button.TooltipText = active ? "Pause (Esc)" : button.GetMeta("cvpp_tooltip").AsString();
+            button.TooltipText = active ? "Pause" : button.GetMeta("cvpp_tooltip").AsString();
         }
         pause.Modulate = enabled ? Colors.White : new Color(1, 1, 1, .3f);
         Enabled(button, enabled);

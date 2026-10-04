@@ -20,7 +20,19 @@ internal static class WorkerHost
             throw new InvalidOperationException("The solver worker requires an isolated headless profile.");
         new Harmony("clarelab.cvpp.assets").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
         new Harmony("clarelab.cvpp.presentation").CreateClassProcessor(typeof(HeadlessPresentation)).Patch();
+        var persistence = new Harmony("clarelab.cvpp.persistence");
+        persistence.CreateClassProcessor(typeof(HeadlessRunSave)).Patch();
+        persistence.CreateClassProcessor(typeof(HeadlessProgressSave)).Patch();
+        InstallSimulationPatches();
+        NGame.Instance!.StartOnMainMenu = false;
         _ = Run();
+    }
+
+    internal static void InstallSimulationPatches()
+    {
+        var patches = new Harmony("clarelab.cvpp.simulation");
+        foreach (var type in new[] { typeof(HeadlessAudio), typeof(HeadlessAudioStop) })
+            patches.CreateClassProcessor(type).Patch();
     }
 
     private static async Task Run()
@@ -36,6 +48,7 @@ internal static class WorkerHost
             await NGame.Instance.GameStartupComplete;
             while (NGame.Instance.Transition.InTransition) await Tree.ToSignal(Tree, SceneTree.SignalName.ProcessFrame);
             await NAssetLoader.Instance.LoadInTheBackground(PreloadManager.Cache.CreateSession("cvpp-worker", []));
+            NGame.Instance.ProcessMode = Node.ProcessModeEnum.Disabled;
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
             Engine.MaxFps = 10;
@@ -93,7 +106,8 @@ internal static class WorkerHost
                     await using var combat = new NativeCombat { Mode = CombatExecution.Worker };
                     try
                     {
-                        var result = await HealthSearch.Run(combat, () => message.Request.Position.Restore(combat), message.Request.Options,
+                        var checkpoint = CombatCheckpoint.Import(message.Request.Position.Root);
+                        var result = await HealthSearch.Run(combat, () => message.Request.Position.Restore(combat, checkpoint), message.Request.Options,
                             progress => outgoing.Writer.TryWrite(new WorkerMessage("progress", message.Id, Progress: progress)), cancellation.Token, message.Request.Incumbent);
                         outgoing.Writer.TryWrite(new WorkerMessage("result", message.Id, Result: result));
                     }

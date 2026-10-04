@@ -7,12 +7,18 @@ namespace cvpp;
 
 internal static class HealthSearch
 {
+    private readonly record struct Observation(bool Terminal, int Hp, uint[] Actions);
+
     internal static async Task<SolveResult> Run(NativeCombat combat, Func<ValueTask<RunState>> restore,
-        SolveOptions options, Action<SolveProgress>? progress = null, CancellationToken cancellationToken = default, uint[]? incumbent = null)
+        SolveOptions options, Action<SolveProgress>? progress = null, CancellationToken cancellationToken = default, uint[]? incumbent = null,
+        bool cache = true)
     {
         options.Validate();
         using var planner = new NativePlanner(options.Nodes, options.Depth);
         var cursor = new ReplayCursor<RunState>(options.Depth, restore, combat.Execute);
+        var tree = new ReplayTree<RunState, Observation>(cursor, state => new Observation(combat.Finished,
+            combat.Finished && combat.Victory ? state.Players[0].Creature.CurrentHp : -1,
+            combat.Finished ? [] : Ordered(combat, state)), cache ? (uint)Math.Min(1_000_000UL, (ulong)options.Nodes * options.Depth) : 0);
         var random = new Random(options.Seed);
         var buffer = new uint[options.Depth];
         var timer = Stopwatch.StartNew();
@@ -49,20 +55,21 @@ internal static class HealthSearch
         {
             int length = planner.Next(buffer);
             if (length < 0) break;
-            var state = await cursor.MoveTo(buffer.AsMemory(0, length));
-            bool terminal = combat.Finished;
-            uint[] actions = terminal ? [] : Ordered(combat, state);
+            var observation = await tree.MoveTo(buffer.AsMemory(0, length));
+            bool terminal = observation.Terminal;
+            uint[] actions = observation.Actions;
             int steps = length;
-            while (!combat.Finished && steps < options.Depth && !Expired())
+            bool greedy = planner.Stats.Simulations == 0;
+            while (!observation.Terminal && steps < options.Depth && !Expired())
             {
-                var available = steps == length ? actions : Ordered(combat, state);
+                var available = observation.Actions;
                 if (available.Length == 0) break;
-                int index = planner.Stats.Simulations == 0 || random.NextDouble() < .8 ? 0 : random.Next(available.Length);
+                int index = greedy || random.NextDouble() < .8 ? 0 : random.Next(available.Length);
                 buffer[steps++] = available[index];
-                state = await cursor.MoveTo(buffer.AsMemory(0, steps));
+                observation = await tree.MoveTo(buffer.AsMemory(0, steps));
                 if (timer.ElapsedMilliseconds - lastProgress >= 250 && !changed) await Publish();
             }
-            int hp = combat.Finished && combat.Victory ? state.Players[0].Creature.CurrentHp : -1;
+            int hp = observation.Hp;
             if (hp >= 0 && (hp > bestHp || (hp == bestHp && (best == null || steps < best.Length))))
             {
                 bestHp = hp;
@@ -104,7 +111,7 @@ internal static class HealthSearch
     private static uint[] Ordered(NativeCombat combat, RunState run)
     {
         var actions = combat.Actions(run, includePotions: false);
-        if (combat.HasChoice) return actions;
+        if (combat.HasChoice || actions.Length <= 1) return actions;
         var player = run.Players.Single();
         var state = player.Creature.CombatState!;
         decimal incoming = state.HittableEnemies.Sum(enemy => enemy.Monster?.NextMove?.Intents
@@ -113,7 +120,7 @@ internal static class HealthSearch
         double Value(uint action)
         {
             if (action == NativeCombat.EndTurn) return -100;
-            var (card, target) = combat.Resolve(run, action);
+            var (card, target) = combat.Resolve(run, action, validate: false);
             var vars = card.DynamicVars.Clone(card);
             card.UpdateDynamicVarPreview(CardPreviewMode.Normal, target, vars);
             decimal damage = vars.Values.Where(v => v.Name == "Damage").Sum(v => v.PreviewValue);

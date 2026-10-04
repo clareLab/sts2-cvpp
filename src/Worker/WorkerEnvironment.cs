@@ -10,7 +10,7 @@ internal static class WorkerEnvironment
     internal static WorkerSetup Capture()
     {
         var loaded = ModManager.GetLoadedMods().ToArray();
-        var selected = loaded.Where(mod => mod.assemblies.Count != 0).ToHashSet();
+        var selected = loaded.Where(mod => mod.manifest!.affectsGameplay).ToHashSet();
         void Dependencies(Mod mod)
         {
             foreach (var dependency in mod.manifest!.dependencies ?? [])

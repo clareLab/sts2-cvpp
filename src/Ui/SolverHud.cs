@@ -8,6 +8,9 @@ namespace cvpp;
 
 internal static class SolverHud
 {
+    private const int MetricIconSize = 16;
+    private const int MetricGap = 4;
+    private const int SummaryGap = 12;
     private static CanvasLayer? _layer;
     private static PanelContainer _toolbar = null!;
     private static PanelContainer _route = null!;
@@ -30,11 +33,16 @@ internal static class SolverHud
     private static Button _routeButton = null!;
     private static Button _settingsButton = null!;
     private static ProgressBar _progress = null!;
+    private static MarginContainer _summaryPadding = null!;
+    private static HBoxContainer _hpMetric = null!;
+    private static HBoxContainer _countMetric = null!;
     private static BudgetEditor _timeBudget = null!;
     private static BudgetEditor _memoryBudget = null!;
     private static CombatPlan? _shown;
     private static SolveProgress? _shownProgress;
     private static bool _shownSearching;
+    private static CombatPlan? _scorePlan;
+    private static int _scoreStep = -1;
     private static int _shownStep = -1;
     private static string? _error;
     private static Color _handleColor;
@@ -43,6 +51,7 @@ internal static class SolverHud
     private static Vector2 _offset;
     private static Vector2 _view;
     private static Vector2 _position;
+    private static Vector2 _columns = new(-1, -1);
     internal static bool Editing => _layer != null && (_timeBudget.Input.HasFocus() || _memoryBudget.Input.HasFocus());
 
     internal static void Install()
@@ -92,7 +101,7 @@ internal static class SolverHud
         _reset = Ui.Icon(Ui.Reset, "Reset", "CvppReset", SolverController.Reset);
         foreach (var button in new[] { _solve, _step, _turn, _auto, _reset }) bar.AddChild(button);
         bar.AddChild(new VSeparator());
-        _routeButton = Ui.Icon(Ui.Route, "Route (F10)", "CvppRouteToggle", Toggle);
+        _routeButton = Ui.Icon(Ui.Route, "Route", "CvppRouteToggle", Toggle);
         _routeButton.ToggleMode = true;
         bar.AddChild(_routeButton);
         _settingsButton = Ui.Icon(Ui.Settings, "Settings", "CvppSettings", () => Open(_settings, toggle: true));
@@ -101,9 +110,11 @@ internal static class SolverHud
         _progress = new ProgressBar { Name = "CvppProgress", Theme = Ui.Theme, ShowPercentage = false, CustomMinimumSize = new Vector2(0, 3), MaxValue = 1, MouseFilter = Control.MouseFilterEnum.Ignore };
         _layer.AddChild(_progress);
         var summary = new GridContainer { Name = "CvppSummary", Columns = 3 };
-        summary.AddThemeConstantOverride("h_separation", 12);
+        summary.AddThemeConstantOverride("h_separation", SummaryGap);
         summary.AddThemeConstantOverride("v_separation", 0);
-        column.AddChild(summary);
+        _summaryPadding = new MarginContainer();
+        column.AddChild(_summaryPadding);
+        _summaryPadding.AddChild(summary);
         _status = Ui.Text("Ready", 18);
         _status.Name = "CvppStatus";
         _status.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
@@ -112,8 +123,8 @@ internal static class SolverHud
         _status.MouseFilter = Control.MouseFilterEnum.Pass;
         _score = Ui.Text("—", 18);
         _score.Name = "CvppHp";
-        _score.TooltipText = "Final HP";
-        summary.AddChild(Metric(Ui.Heart, _score));
+        _score.TooltipText = "HP change";
+        summary.AddChild(_hpMetric = Metric(Ui.Heart, _score));
         _stats = Ui.Text("—", 18);
         _stats.Name = "CvppElapsed";
         _stats.TooltipText = "Search time";
@@ -124,7 +135,7 @@ internal static class SolverHud
         _explored.Name = "CvppExplored";
         _explored.TooltipText = "Explored routes";
         _explored.MouseFilter = Control.MouseFilterEnum.Pass;
-        summary.AddChild(Metric(Ui.Explored, _explored));
+        summary.AddChild(_countMetric = Metric(Ui.Explored, _explored));
         _speed = Ui.Text("0/s", 18);
         _speed.Name = "CvppSpeed";
         _speed.TooltipText = "Simulations per second";
@@ -186,8 +197,8 @@ internal static class SolverHud
     private static HBoxContainer Metric(Texture2D icon, Label value)
     {
         var metric = new HBoxContainer { CustomMinimumSize = new Vector2(96, 0), TooltipText = value.TooltipText, MouseFilter = Control.MouseFilterEnum.Pass };
-        metric.AddThemeConstantOverride("separation", 4);
-        metric.AddChild(Ui.Image(icon, 16));
+        metric.AddThemeConstantOverride("separation", MetricGap);
+        metric.AddChild(Ui.Image(icon, MetricIconSize));
         metric.AddChild(value);
         return metric;
     }
@@ -233,6 +244,7 @@ internal static class SolverHud
         int step = searching ? 0 : SolverController.Step;
         if (_shown != plan && (plan == null || _route.Visible)) Populate(plan);
         if (_shownStep != step && _shown == plan) UpdateStep(step);
+        RefreshScore(plan, step);
         RefreshMetrics(searching);
         _layer.Visible = (CombatManager.Instance.IsInProgress || busy || plan != null)
             && !RunManager.Instance.IsPaused && NGame.Instance?.Transition.InTransition != true;
@@ -265,13 +277,33 @@ internal static class SolverHud
         Color handleColor = _error != null ? Ui.Loss : busy ? Ui.Gold : new Color("eee5cf");
         if (_handleColor != handleColor) { _handleColor = handleColor; _handle.AddThemeColorOverride("font_color", handleColor); }
         var progress = SolverController.Progress;
-        _score.Text = plan?.FinalHp.ToString() ?? "—";
         _progress.SelfModulate = busy ? Colors.White : Colors.Transparent;
         _progress.Indeterminate = searching && (progress == null || SolverController.SearchSeconds == 0);
         _progress.Value = SolverController.Executing && plan != null ? (double)step / plan.Steps.Length
             : searching && SolverController.SearchSeconds > 0 ? Math.Min(1, (progress?.ElapsedMs ?? 0) / (SolverController.SearchSeconds * 1000)) : 0;
         Layout();
+        var columns = new Vector2(_steps.GetColumnWidth(0), _steps.GetColumnWidth(1));
+        if (_columns != columns)
+        {
+            _columns = columns;
+            float numberLeft = Ui.RouteTextOffset(_steps, 0);
+            _summaryPadding.AddThemeConstantOverride("margin_left", (int)Math.Round(numberLeft - MetricIconSize - MetricGap));
+            float width = (float)Math.Round(Ui.RouteTextOffset(_steps, 2) - numberLeft) - SummaryGap;
+            _hpMetric.CustomMinimumSize = _countMetric.CustomMinimumSize = new Vector2(width, 0);
+        }
         if (_route.Visible) Ui.FitTree(_steps);
+    }
+
+    private static void RefreshScore(CombatPlan? plan, int step)
+    {
+        if (ReferenceEquals(_scorePlan, plan) && _scoreStep == step) return;
+        _scorePlan = plan;
+        _scoreStep = step;
+        int delta = 0;
+        if (plan != null)
+            for (int index = step; index < plan.Steps.Length; index++) delta += plan.Steps[index].HpDelta;
+        _score.Text = plan == null ? "—" : delta > 0 ? "+" + delta : delta.ToString();
+        _score.AddThemeColorOverride("font_color", plan == null ? Ui.Muted : delta < 0 ? Ui.Loss : Ui.Gain);
     }
 
     private static void RefreshMetrics(bool searching)

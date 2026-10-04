@@ -7,6 +7,7 @@
     <Compile Include="../../src/NativeSearch.cs" Link="NativeSearch.cs" />
     <Compile Include="../../src/SearchDriver.cs" Link="SearchDriver.cs" />
     <Compile Include="../../src/ReplayCursor.cs" Link="ReplayCursor.cs" />
+    <Compile Include="../../src/ReplayTree.cs" Link="ReplayTree.cs" />
     <Compile Include="../../src/SelectionSet.cs" Link="SelectionSet.cs" />
     <Compile Include="../../src/NativePlanner.cs" Link="NativePlanner.cs" />
     <Compile Include="../../src/Plan.cs" Link="Plan.cs" />

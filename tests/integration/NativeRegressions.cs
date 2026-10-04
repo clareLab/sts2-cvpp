@@ -152,6 +152,12 @@ internal static class NativeRegressions
             combat.Mode = CombatExecution.Reference;
         }
         combat.Mode = CombatExecution.Worker;
+        var uncached = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(0, 64, 32), cache: false);
+        var cached = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(0, 64, 32));
+        Require(uncached.Stats == cached.Stats && uncached.StopReason == cached.StopReason
+            && uncached.Plan?.FinalHp == cached.Plan?.FinalHp
+            && (uncached.Plan?.Steps.Select(step => step.Action) ?? []).SequenceEqual(cached.Plan?.Steps.Select(step => step.Action) ?? [])
+            && cached.Actions < uncached.Actions, "cached search preserves traversal, score and route with fewer native actions");
         using var stop = new CancellationTokenSource();
         CombatPlan? preview = null;
         run = await combat.Restore(original);
@@ -172,7 +178,16 @@ internal static class NativeRegressions
         await combat.DisposeAsync();
         Reject<ObjectDisposedException>(() => _ = combat.Actions(run));
         GD.Print($"[cvpp] REGRESSIONS {compared} reference states, {worker.Search.Stats.Evaluated} two-turn nodes");
-        return new { compared_states = compared, search = worker, terminal, baseline_hp = baseline.Plan.FinalHp, health, checkpoint_bytes = checkpoint.Length };
+        return new
+        {
+            compared_states = compared,
+            search = worker,
+            terminal,
+            baseline_hp = baseline.Plan.FinalHp,
+            health,
+            cache = new { uncachedActions = uncached.Actions, cachedActions = cached.Actions, simulations = cached.Stats.Simulations },
+            checkpoint_bytes = checkpoint.Length
+        };
     }
 
     private static SerializableCard Card<T>(int upgrade = 0) where T : CardModel => new()

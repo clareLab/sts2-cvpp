@@ -34,9 +34,9 @@ internal sealed partial record CombatPosition
         return new CombatPosition(new CombatCheckpoint(replay).Export(), history, CombatFingerprint.Capture(run));
     }
 
-    internal async ValueTask<RunState> Restore(NativeCombat combat)
+    internal async ValueTask<RunState> Restore(NativeCombat combat, CombatCheckpoint? checkpoint = null)
     {
-        var run = await combat.Restore(CombatCheckpoint.Import(Root));
+        var run = await combat.Restore(checkpoint ?? CombatCheckpoint.Import(Root));
         var reader = new PacketReader();
         reader.Reset(History);
         var events = reader.ReadList<CombatReplayEvent>();

@@ -45,6 +45,31 @@ internal static class ReplayTests
         }
         catch (ArgumentOutOfRangeException) { }
         Check(await cursor.MoveTo(new uint[] { 7, 8, 9 }), [7, 8, 9]);
+        foreach (uint capacity in new uint[] { 0, 1, 64 })
+        {
+            var replay = new ReplayCursor<State>(4, () => ValueTask.FromResult(new State()), (state, action) =>
+            {
+                Advance(state, action);
+                return ValueTask.CompletedTask;
+            });
+            var tree = new ReplayTree<State, (uint Rng, long Score)>(replay, state => (state.Rng, state.Score), capacity);
+            foreach (var path in paths)
+            {
+                var actual = await tree.MoveTo(path);
+                Check(new State { Rng = actual.Rng, Score = actual.Score }, path);
+            }
+            uint restores = replay.Restores;
+            uint actions = replay.Actions;
+            foreach (var path in new uint[][] { [], [1], [1, 2], [1, 3], [4], [] })
+            {
+                var actual = await tree.MoveTo(path);
+                Check(new State { Rng = actual.Rng, Score = actual.Score }, path);
+            }
+            if (tree.Count > capacity || capacity == 64 && (replay.Restores != restores || replay.Actions != actions))
+                throw new InvalidOperationException("Cached observations exceeded their budget or replayed an observed branch.");
+            var branch = await tree.MoveTo(new uint[] { 1, 2, 9 });
+            Check(new State { Rng = branch.Rng, Score = branch.Score }, [1, 2, 9]);
+        }
         Console.WriteLine("PASS replay prefix reuse, asynchronous execution and recovery after partial failures");
     }
 

@@ -275,12 +275,6 @@ internal static class SolverController
     internal static bool Input(InputEvent input)
     {
         SolverHud.Pointer(input);
-        if (input is InputEventKey { Pressed: true, Echo: false } key)
-        {
-            if (key.Keycode == Key.F10) { SolverHud.Toggle(); return true; }
-            if (key.Keycode == Key.Escape && Busy) { Stop(); return true; }
-            if (key.Keycode == Key.Escape && SolverHud.Close()) return true;
-        }
         return Executing && input is InputEventKey or InputEventJoypadButton or InputEventJoypadMotion;
     }
 
@@ -317,7 +311,7 @@ internal static class SolverInputPatch
 
     private static bool Prefix([HarmonyArgument(0)] InputEvent inputEvent)
     {
-        if (SolverHud.Editing && inputEvent is InputEventKey { Keycode: not Key.Escape and not Key.F10 }) return false;
+        if (SolverHud.Editing && inputEvent is InputEventKey) return false;
         if (!SolverController.Input(inputEvent)) return true;
         ((SceneTree)Engine.GetMainLoop()).Root.SetInputAsHandled();
         return false;

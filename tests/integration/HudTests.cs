@@ -28,6 +28,21 @@ internal static class HudTests
             || Math.Abs(Baseline(hp) - Baseline(elapsed)) > .5f || Math.Abs(Baseline(hp) - Baseline(status)) > .5f
             || Math.Abs(Baseline(explored) - Baseline(speed)) > .5f || Math.Abs(Baseline(explored) - Baseline(memory)) > .5f)
             throw new InvalidOperationException("Status numbers, right edges or text baselines are misaligned.");
+        var tree = Node<Godot.Tree>("CvppSteps");
+        if (tree.IsVisibleInTree()
+            && (Math.Abs(hp.GlobalPosition.X - tree.GlobalPosition.X - Ui.RouteTextOffset(tree, 0)) > 1
+                || Math.Abs(elapsed.GlobalPosition.X - Node<Label>("CvppActionHeading").GlobalPosition.X) > 1))
+            throw new InvalidOperationException("Status numbers do not align with the route headings.");
+    }
+
+    internal static void Health(CombatPlan plan, int step)
+    {
+        SolverHud.Tick();
+        int delta = plan.Steps.Skip(step).Sum(action => action.HpDelta);
+        var hp = Node<Label>("CvppHp");
+        if (hp.Text != (delta > 0 ? "+" + delta : delta.ToString())
+            || hp.GetThemeColor("font_color") != (delta < 0 ? Ui.Loss : Ui.Gain))
+            throw new InvalidOperationException("Status HP does not match the remaining route delta and colour.");
     }
 
     internal static async Task Run()
@@ -84,6 +99,13 @@ internal static class HudTests
         for (int frame = 0; frame < 3; frame++) await Scene.ToSignal(Scene, SceneTree.SignalName.ProcessFrame);
         var toolbar = Node<Control>("CvppToolbar");
         var route = Node<Control>("CvppRoute");
+        StatusAlignment();
+        foreach (var key in new[] { Key.F10, Key.Escape })
+        {
+            using var input = new InputEventKey { Keycode = key, Pressed = true };
+            if (SolverController.Input(input) || !route.Visible)
+                throw new InvalidOperationException("The solver still handles a global keyboard shortcut.");
+        }
         if (Math.Abs(toolbar.Size.X - route.Size.X) > 1) throw new InvalidOperationException("Route width differs from the toolbar.");
         var tree = Node<Godot.Tree>("CvppSteps");
         var root = tree.GetRoot()!;

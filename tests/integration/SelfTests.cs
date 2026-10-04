@@ -32,6 +32,10 @@ internal static class SelfTests
             throw new InvalidOperationException("An isolated headless test sandbox is required.");
         new Harmony("clarelab.cvpp.selftest").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
         new Harmony("clarelab.cvpp.selftest.presentation").CreateClassProcessor(typeof(HeadlessPresentation)).Patch();
+        var persistence = new Harmony("clarelab.cvpp.selftest.persistence");
+        persistence.CreateClassProcessor(typeof(HeadlessRunSave)).Patch();
+        persistence.CreateClassProcessor(typeof(HeadlessProgressSave)).Patch();
+        WorkerHost.InstallSimulationPatches();
         SolverController.Initialize();
         _ = Run();
     }
@@ -55,40 +59,48 @@ internal static class SelfTests
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
             string continueSave = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
-            if (File.Exists(continueSave))
+            if (OS.GetCmdlineArgs().Contains("--cvpp-worker-benchmark"))
             {
-                await ContinueTests.Run(continueSave);
-                Check(true, "cold continue keeps controls disabled until ready and displays toolbar in combat");
+                benchmark = await WorkerBenchmarks.Run(continueSave);
+                Check(true, "cold and warm worker benchmark with live route verification");
             }
-            string fixture = ProjectSettings.GlobalizePath("user://cvpp-fixture.mcr");
-            if (File.Exists(fixture))
+            else
             {
-                var reader = new PacketReader();
-                reader.Reset(File.ReadAllBytes(fixture));
-                var replay = reader.Read<CombatReplay>();
-                string save = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
-                if (File.Exists(save)) replay.serializableRun = JsonSerializer.Deserialize(File.ReadAllText(save), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
-                replay.events.Clear();
-                replay.checksumData.Clear();
-                var checkpoint = new CombatCheckpoint(replay);
-                await using var combat = new NativeCombat { Mode = CombatExecution.Worker };
-                var result = await HealthSearch.Run(combat, () => combat.Restore(checkpoint), new SolveOptions(5));
-                Check(result.Plan != null, "external replay decodes and produces a verified winning route");
-            }
-            if (!OS.GetCmdlineArgs().Contains("--cvpp-ui") && !OS.GetCmdlineArgs().Contains("--cvpp-product-only"))
-            {
-                if (OS.GetCmdlineArgs().Contains("--cvpp-benchmark"))
+                if (File.Exists(continueSave))
                 {
-                    benchmark = await NativeBenchmark.Run();
-                    Check(true, "native branch replay benchmark");
+                    await ContinueTests.Run(continueSave);
+                    Check(true, "cold continue keeps controls disabled until ready and displays toolbar in combat");
                 }
-                else await Smoke();
-                regressions = await NativeRegressions.Run();
-                Check(true, "native choices, potions, generated cards, cross-turn replay and bounded search");
+                string fixture = ProjectSettings.GlobalizePath("user://cvpp-fixture.mcr");
+                if (File.Exists(fixture))
+                {
+                    var reader = new PacketReader();
+                    reader.Reset(File.ReadAllBytes(fixture));
+                    var replay = reader.Read<CombatReplay>();
+                    string save = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
+                    if (File.Exists(save)) replay.serializableRun = JsonSerializer.Deserialize(File.ReadAllText(save), JsonSerializationUtility.GetTypeInfo<SerializableRun>())!;
+                    replay.events.Clear();
+                    replay.checksumData.Clear();
+                    var checkpoint = new CombatCheckpoint(replay);
+                    await using var combat = new NativeCombat { Mode = CombatExecution.Worker };
+                    var result = await HealthSearch.Run(combat, () => combat.Restore(checkpoint), new SolveOptions(5));
+                    Check(result.Plan != null, "external replay decodes and produces a verified winning route");
+                }
+                if (!OS.GetCmdlineArgs().Contains("--cvpp-ui") && !OS.GetCmdlineArgs().Contains("--cvpp-product-only"))
+                {
+                    if (OS.GetCmdlineArgs().Contains("--cvpp-benchmark"))
+                    {
+                        benchmark = await NativeBenchmark.Run();
+                        Check(true, "native branch replay benchmark");
+                    }
+                    else await Smoke();
+                    regressions = await NativeRegressions.Run();
+                    Check(true, "native choices, potions, generated cards, cross-turn replay and bounded search");
+                }
+                product = OS.GetCmdlineArgs().Contains("--cvpp-ui") ? await ProductTests.Run()
+                    : new[] { await ProductTests.Run(), await ProductTests.Run("SILENT", "CVPP-REGRESSION-001") };
+                Check(true, "isolated worker, live state preservation, step, turn and takeover");
             }
-            product = OS.GetCmdlineArgs().Contains("--cvpp-ui") ? await ProductTests.Run()
-                : new[] { await ProductTests.Run(), await ProductTests.Run("SILENT", "CVPP-REGRESSION-001") };
-            Check(true, "isolated worker, live state preservation, step, turn and takeover");
         }
         catch (Exception error)
         {

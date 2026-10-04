@@ -48,6 +48,7 @@ internal static class ProductTests
             throw new InvalidOperationException("A complete route with HP deltas was not published during search.");
         SolverHud.Tick();
         var toolbar = (Control)Tree.Root.FindChild("CvppToolbar", true, false);
+        HudTests.Health(preview, 0);
         if (SolverController.Progress is not { Simulations: > 0 } progress || SolverController.SimulationsPerSecond <= 0
             || Tree.Root.FindChild("CvppExplored", true, false) is not Label explored
             || explored.Text != progress.Simulations.ToString("N0", CultureInfo.InvariantCulture))
@@ -96,11 +97,13 @@ internal static class ProductTests
         if (SolverController.Error != null || SolverController.Step == 0 || SolverController.Plan == null)
             throw new InvalidOperationException(SolverController.Error ?? "Single step failed.");
         int step = SolverController.Step;
+        HudTests.Health(SolverController.Plan, step);
         Click("CvppTurn");
         await Until(() => !SolverController.Busy, "play turn");
         if (SolverController.Error != null || SolverController.Step <= step || SolverController.Plan == null)
             throw new InvalidOperationException(SolverController.Error ?? "Turn execution failed.");
         before = CombatFingerprint.Capture(run);
+        HudTests.Health(SolverController.Plan, SolverController.Step);
         int previousHp = plan.FinalHp;
         SolverController.Seconds = 0;
         timing.Restart();

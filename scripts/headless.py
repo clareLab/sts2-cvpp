@@ -66,10 +66,18 @@ def main():
     parser.add_argument("--replay", type=Path)
     parser.add_argument("--save", type=Path)
     parser.add_argument("--product-only", action="store_true")
+    parser.add_argument("--worker-benchmark", action="store_true")
+    parser.add_argument("--fixed-work", action="store_true")
     parser.add_argument("--exit", choices=["startup", "search", "normal", "menu"])
     args = parser.parse_args()
+    if args.worker_benchmark and (not args.save or args.ui or args.benchmark or args.exit):
+        parser.error("--worker-benchmark requires --save and headless mode")
+    if args.fixed_work and not args.worker_benchmark:
+        parser.error("--fixed-work requires --worker-benchmark")
     source, data = args.source.resolve(), args.data.resolve()
     name = "ui" if args.ui else "benchmark" if args.benchmark else "headless"
+    if args.worker_benchmark:
+        name = "worker-benchmark"
     if args.exit:
         name = "exit-" + args.exit
     if args.mod:
@@ -138,6 +146,10 @@ def main():
         ]
         if args.benchmark:
             command.append("--cvpp-benchmark")
+        if args.worker_benchmark:
+            command.append("--cvpp-worker-benchmark")
+        if args.fixed_work:
+            command.append("--cvpp-fixed-work")
         if args.product_only:
             command.append("--cvpp-product-only")
         if args.exit:
