@@ -212,10 +212,11 @@ internal static class SolverHud
     {
         if (_layer == null) return;
         bool busy = SolverController.Busy;
-        bool ready = SolverController.Ready;
         var plan = SolverController.Plan;
         _layer.Visible = (CombatManager.Instance.IsInProgress || busy || plan != null)
             && !RunManager.Instance.IsPaused && NGame.Instance?.Transition.InTransition != true;
+        if (!_layer.Visible) return;
+        bool ready = SolverController.Ready;
         _shield.Visible = SolverController.Executing;
         Ui.Enabled(_solve, !busy && ready);
         Ui.Enabled(_step, !busy && ready && plan != null && SolverController.Step < plan.Steps.Length);

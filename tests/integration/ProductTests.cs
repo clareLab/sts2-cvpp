@@ -15,8 +15,6 @@ internal static class ProductTests
 
     internal static async Task<object> Run(string characterId = "IRONCLAD", string seed = "CVPP-SMOKE-001")
     {
-        SolverController.Initialize();
-        SolverHud.Install();
         if (RunManager.Instance.IsInProgress) RunManager.Instance.CleanUp();
         var character = ModelDb.AllCharacters.Single(c => c.Id.Entry == characterId);
         SaveManager.Instance.Progress.GetOrCreateCharacterStats(character.Id).TotalLosses = 2;
@@ -26,6 +24,7 @@ internal static class ProductTests
             .OrderBy(p => p.coord.row).ThenBy(p => p.coord.col).First();
         await RunManager.Instance.EnterMapCoord(point.coord);
         await Until(() => NativeCombat.IsStable(run), "product combat");
+        await Until(() => Tree.Root.FindChild("CvppToolbar", true, false) is Control { } toolbar && toolbar.IsVisibleInTree(), "automatic toolbar installation");
         if (OS.GetCmdlineArgs().Contains("--cvpp-ui")) RenderingServer.RenderLoopEnabled = false;
         string before = CombatFingerprint.Capture(run);
         SolverController.Seconds = 5;
@@ -79,7 +78,7 @@ internal static class ProductTests
         return new { characterId, plan.FinalHp, steps = plan.Steps.Length, plan.Turns, firstSolveMs, cancelledSolveMs };
     }
 
-    private static async Task Until(Func<bool> ready, string stage, int seconds = 30)
+    internal static async Task Until(Func<bool> ready, string stage, int seconds = 30)
     {
         var timer = Stopwatch.StartNew();
         do

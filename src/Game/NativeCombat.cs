@@ -372,11 +372,11 @@ internal sealed class NativeCombat : IAsyncDisposable
     internal bool Stable(RunState run) => !HasChoice && IsStable(run);
 
     internal static bool IsStable(RunState run) => CombatManager.Instance.IsInProgress
-        && !Manager.NetService.IsGameLoading && !Manager.ActionExecutor.IsRunning
-        && Manager.ActionQueueSet.IsEmpty && !CombatManager.Instance.IsStarting
+        && Manager.NetService is { IsGameLoading: false } && Manager.ActionExecutor is { IsRunning: false }
+        && Manager.ActionQueueSet is { IsEmpty: true } && !CombatManager.Instance.IsStarting
         && !CombatManager.Instance.EndingPlayerTurnPhaseOne && !CombatManager.Instance.EndingPlayerTurnPhaseTwo
         && !CombatManager.Instance.PlayerActionsDisabled
-        && run.Players.Single().PlayerCombatState?.Phase == PlayerTurnPhase.Play;
+        && run.Players.Count == 1 && run.Players[0].PlayerCombatState?.Phase == PlayerTurnPhase.Play;
 
     internal string Fingerprint(RunState run)
     {

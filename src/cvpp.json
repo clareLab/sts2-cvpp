@@ -3,7 +3,7 @@
   "name": "Combat Solver ++",
   "author": "clareLab",
   "description": "Find winning routes with the most HP. Step, play a turn, or take over. Linux preview; no potions.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "min_game_version": "0.111.0",
   "has_dll": true,
   "has_pck": false,

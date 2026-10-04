@@ -32,6 +32,7 @@ internal static class SelfTests
             throw new InvalidOperationException("An isolated headless test sandbox is required.");
         new Harmony("clarelab.cvpp.selftest").CreateClassProcessor(typeof(HeadlessAssets)).Patch();
         new Harmony("clarelab.cvpp.selftest.presentation").CreateClassProcessor(typeof(HeadlessPresentation)).Patch();
+        SolverController.Initialize();
         _ = Run();
     }
 
@@ -53,6 +54,12 @@ internal static class SelfTests
             Check(NativeCore.Initialize() == NativeCore.ExpectedAbi, "Rust loaded inside Godot");
             SaveManager.Instance.SetFtuesEnabled(false);
             SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
+            string continueSave = ProjectSettings.GlobalizePath("user://cvpp-fixture.save");
+            if (File.Exists(continueSave))
+            {
+                await ContinueTests.Run(continueSave);
+                Check(true, "cold continue keeps controls disabled until ready and displays toolbar in combat");
+            }
             string fixture = ProjectSettings.GlobalizePath("user://cvpp-fixture.mcr");
             if (File.Exists(fixture))
             {

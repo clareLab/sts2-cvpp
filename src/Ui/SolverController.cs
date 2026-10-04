@@ -32,7 +32,7 @@ internal static class SolverController
     internal static int Seconds { get; set; } = 15;
     internal static double Elapsed => Clock.Elapsed.TotalSeconds;
     internal static bool Ready => RunManager.Instance.DebugOnlyGetState() is { } run && run.Players.Count == 1
-        && RunManager.Instance.NetService.Type == NetGameType.Singleplayer && NativeCombat.IsStable(run);
+        && RunManager.Instance.NetService?.Type == NetGameType.Singleplayer && NativeCombat.IsStable(run);
 
     internal static void Initialize()
     {
