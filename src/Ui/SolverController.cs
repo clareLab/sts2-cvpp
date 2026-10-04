@@ -35,8 +35,11 @@ internal static class SolverController
     internal static string? Error { get; private set; }
     internal static SolveProgress? Progress { get; private set; }
     internal static CombatPlan? Plan { get; private set; }
+    internal static CombatPlan? Preview { get; private set; }
+    internal static string? StopReason { get; private set; }
     internal static int Step { get; private set; }
     internal static int Seconds { get; set; } = 15;
+    internal static int MemoryMiB { get; set; } = 2048;
     internal static double Elapsed => Clock.Elapsed.TotalSeconds;
     internal static bool Ready => RunManager.Instance.DebugOnlyGetState() is { } run && run.Players.Count == 1
         && RunManager.Instance.NetService?.Type == NetGameType.Singleplayer && NativeCombat.IsStable(run);
@@ -68,7 +71,8 @@ internal static class SolverController
                 ReleaseWorker();
                 _run = run;
                 _room = run?.CurrentRoom;
-                Plan = null;
+                Plan = Preview = null;
+                StopReason = null;
                 Step = 0;
                 Progress = null;
                 Status = "Ready";
@@ -90,7 +94,7 @@ internal static class SolverController
             Stop();
             _generation++;
             ReleaseWorker();
-            Plan = null;
+            Plan = Preview = null;
             Progress = null;
             ((SceneTree)Engine.GetMainLoop()).ProcessFrame -= Tick;
             SolverHud.Disable();
@@ -103,7 +107,9 @@ internal static class SolverController
         int generation = _generation;
         var previous = Plan?.Steps.Skip(Step).ToArray();
         Progress = null;
-        Status = "Starting solver";
+        Preview = null;
+        StopReason = null;
+        Status = "Starting";
         var position = await CombatPosition.Capture();
         await _release;
         if (generation != _generation) return;
@@ -118,22 +124,33 @@ internal static class SolverController
         {
             if (!acceptingProgress || generation != _generation) return;
             Progress = progress;
+            if (progress.Plan is { } preview && (Preview == null || preview.FinalHp > Preview.FinalHp
+                || (preview.FinalHp == Preview.FinalHp && preview.Steps.Length < Preview.Steps.Length))) Preview = preview;
             Status = "Searching";
         });
         SolveResult result;
-        try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds), incumbent), updates, _cancel!.Token); }
+        try { result = await _worker.Solve(new SolveRequest(position, new SolveOptions(Seconds, Nodes: 1_000_000, Depth: 256, MemoryMiB: MemoryMiB), incumbent), updates, _cancel!.Token); }
         finally { acceptingProgress = false; }
         if (generation != _generation) return;
         if (!Ready || CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != position.State)
         {
-            Plan = null;
+            Plan = Preview = null;
             Step = 0;
-            Status = "Combat changed · solve again";
+            Status = "Combat changed";
             return;
         }
-        Plan = result.Plan;
+        Plan = Preview = result.Plan;
         Step = 0;
-        Status = Plan == null ? "No winning route · try more time" : "Winning route";
+        StopReason = result.StopReason;
+        Status = result.StopReason switch
+        {
+            "time_limit" => "Time limit",
+            "memory_limit" => "Memory limit",
+            "node_or_depth_limit" => "Search limit",
+            "exhausted" => "Exhausted",
+            _ => "Stopped"
+        };
+        if (result.StopReason == "memory_limit") ReleaseWorker();
         if (takeOver && Plan != null && !_cancel.IsCancellationRequested) await Execute(ExecutionRange.Combat);
     });
 
@@ -178,7 +195,7 @@ internal static class SolverController
                 if (!matches) throw new InvalidOperationException("The result differs from the route. Execution stopped.");
                 Step++;
             }
-            Status = Step == plan.Steps.Length ? $"Victory · {run.Players.Single().Creature.CurrentHp} HP" : "Paused";
+            Status = Step == plan.Steps.Length ? "Victory" : "Paused";
         }
         catch { Plan = null; throw; }
         finally { Executing = false; }
@@ -200,7 +217,7 @@ internal static class SolverController
         catch (OperationCanceledException) { if (generation == _generation) Status = "Stopped"; }
         catch (Exception error)
         {
-            if (generation == _generation) { Status = "Unable to continue"; Error = error.Message; }
+            if (generation == _generation) { Status = "Error"; Error = error.Message; }
             GD.PrintErr("[cvpp] " + error);
         }
         finally { Clock.Stop(); _idleSince = Time.GetTicksMsec(); }
@@ -253,6 +270,7 @@ internal static class SolverInputPatch
 
     private static bool Prefix([HarmonyArgument(0)] InputEvent inputEvent)
     {
+        if (SolverHud.Editing && inputEvent is InputEventKey { Keycode: not Key.Escape and not Key.F10 }) return false;
         if (!SolverController.Input(inputEvent)) return true;
         ((SceneTree)Engine.GetMainLoop()).Root.SetInputAsHandled();
         return false;

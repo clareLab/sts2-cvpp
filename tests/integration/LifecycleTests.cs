@@ -41,6 +41,13 @@ internal static class LifecycleTests
             catch (OperationCanceledException) { }
         }
         Empty(directory);
+        await using (var worker = new WorkerClient(OS.GetExecutablePath(), Path.GetDirectoryName(typeof(Entry).Assembly.Location)!, directory, setup))
+        {
+            var limited = await worker.Solve(request with { Options = new SolveOptions(0, MemoryMiB: 64) }, null, default);
+            if (limited.StopReason != "memory_limit" || worker.ProcessId != null)
+                throw new InvalidOperationException("Startup memory budget did not retire the worker.");
+        }
+        Empty(directory);
     }
 
     internal static async Task Exit(string mode)

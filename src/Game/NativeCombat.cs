@@ -250,7 +250,7 @@ internal sealed class NativeCombat : IAsyncDisposable
         if ((token & 0xc0000000) == Selection)
         {
             var cards = _choices.Pending?[token & 0x3fffffff] ?? throw new InvalidOperationException("No selection is pending.");
-            return cards.Length == 0 ? "Skip selection" : "Choose · " + string.Join(", ", cards.Select(card => card.Title));
+            return cards.Length == 0 ? "Skip selection" : "Choose " + string.Join(", ", cards.Select(card => card.Title));
         }
         var (card, target) = Resolve(run, token);
         string? name = target?.Monster?.Title.GetFormattedText();

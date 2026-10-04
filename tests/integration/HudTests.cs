@@ -1,0 +1,78 @@
+using Godot;
+using MegaCrit.Sts2.Core.Runs;
+
+namespace cvpp;
+
+internal static class HudTests
+{
+    private static SceneTree Scene => (SceneTree)Engine.GetMainLoop();
+    private static T Node<T>(string name) where T : Node => (T)Scene.Root.FindChild(name, true, false);
+
+    internal static async Task Run()
+    {
+        var time = Node<LineEdit>("CvppTimeCustom");
+        string before = CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!);
+        time.GrabFocus();
+        time.SelectAll();
+        foreach (var (key, unicode) in new[] { (Key.Key3, '3'), (Key.Key7, '7'), (Key.Enter, '\0') })
+        {
+            Input.ParseInputEvent(new InputEventKey { Keycode = key, PhysicalKeycode = key, Unicode = unicode, Pressed = true });
+            await Scene.ToSignal(Scene, SceneTree.SignalName.ProcessFrame);
+            Input.ParseInputEvent(new InputEventKey { Keycode = key, PhysicalKeycode = key, Pressed = false });
+            await Scene.ToSignal(Scene, SceneTree.SignalName.ProcessFrame);
+        }
+        if (SolverController.Seconds != 37 || CombatFingerprint.Capture(RunManager.Instance.DebugOnlyGetState()!) != before)
+            throw new InvalidOperationException("Budget keyboard input changed the combat or did not submit.");
+        var memory = Node<LineEdit>("CvppMemoryCustom");
+        memory.Text = "1536";
+        memory.EmitSignal(LineEdit.SignalName.TextSubmitted, memory.Text);
+        HudSettings.Load();
+        if (SolverController.Seconds != 37 || HudSettings.Seconds != 37 || SolverController.MemoryMiB != 1536 || HudSettings.MemoryMiB != 1536)
+            throw new InvalidOperationException("Custom budgets did not persist.");
+        Node<Button>("CvppTime0").EmitSignal(BaseButton.SignalName.Pressed);
+        Node<Button>("CvppMemory0").EmitSignal(BaseButton.SignalName.Pressed);
+        HudSettings.Load();
+        if (HudSettings.Seconds != 0 || HudSettings.MemoryMiB != 0) throw new InvalidOperationException("Unlimited budgets did not persist.");
+        time.Text = "-10";
+        time.EmitSignal(LineEdit.SignalName.TextSubmitted, time.Text);
+        if (SolverController.Seconds != 0) throw new InvalidOperationException("Negative budget was accepted.");
+        time.GrabFocus();
+        time.Text = "51";
+        Node<Button>("CvppTime60").EmitSignal(BaseButton.SignalName.Pressed);
+        if (time.HasFocus() || SolverController.Seconds != 60 || time.Text != "60")
+            throw new InvalidOperationException("Uncommitted custom input overwrote the selected preset.");
+        time.Text = "37";
+        time.EmitSignal(LineEdit.SignalName.TextSubmitted, time.Text);
+        Node<Button>("CvppMemory2048").EmitSignal(BaseButton.SignalName.Pressed);
+        SolverHud.Close();
+        SolverHud.Toggle();
+        for (int frame = 0; frame < 3; frame++) await Scene.ToSignal(Scene, SceneTree.SignalName.ProcessFrame);
+        var toolbar = Node<Control>("CvppToolbar");
+        var route = Node<Control>("CvppRoute");
+        if (Math.Abs(toolbar.Size.X - route.Size.X) > 1) throw new InvalidOperationException("Route width differs from the toolbar.");
+        var tree = Node<Godot.Tree>("CvppSteps");
+        var root = tree.GetRoot()!;
+        var plan = SolverController.Plan!;
+        for (int index = 0; index < plan.Steps.Length; index++)
+        {
+            var step = plan.Steps[index];
+            var item = root.GetChild(index);
+            if (item.GetCustomColor(3) != (step.HpDelta < 0 ? Ui.Loss : Ui.Gain)
+                || item.GetText(3) != (step.HpDelta > 0 ? "+" + step.HpDelta : step.HpDelta.ToString()))
+                throw new InvalidOperationException("Route HP delta or colour is incorrect.");
+        }
+        var longRow = tree.CreateItem(root);
+        longRow.SetText(2, "Choose a generated card from the discard pile and return another generated card to the draw pile before the enemy turn begins");
+        longRow.SetTooltipText(2, longRow.GetText(2));
+        tree.SetMeta("cvpp_layout", "");
+        Ui.FitTree(tree);
+        if (longRow.GetCustomFontSize(2) >= 18 || longRow.CustomMinimumHeight <= tree.GetThemeFont("font").GetHeight(18) * 3
+            || longRow.GetTextOverrunBehavior(2) != TextServer.OverrunBehavior.NoTrimming)
+            throw new InvalidOperationException("Long route text did not wrap and shrink without truncation.");
+        longRow.Free();
+        SolverHud.Close();
+        if (!Node<Control>("CvppSummary").IsVisibleInTree() || Node<Label>("CvppStatus").Text != "Time limit")
+            throw new InvalidOperationException("Search status is hidden with route details closed.");
+        Node<Button>("CvppSettings").EmitSignal(BaseButton.SignalName.Pressed);
+    }
+}

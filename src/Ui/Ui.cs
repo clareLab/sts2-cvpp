@@ -17,6 +17,8 @@ internal static class Ui
     internal const string Choice = "res://images/atlases/ui_atlas.sprites/checkbox_ticked.tres";
     internal static readonly Color Muted = new("83918d");
     internal static readonly Color Gold = new("f2d68d");
+    internal static readonly Color Loss = new("bd4746");
+    internal static readonly Color Gain = new("507b46");
     private static Theme? _theme;
     internal static Theme Theme => _theme ??= CreateTheme();
 
@@ -44,6 +46,33 @@ internal static class Ui
         return label;
     }
 
+    internal static void FitTree(Tree tree)
+    {
+        if (tree.GetRoot() is not { } root) return;
+        string layout = root.GetInstanceId() + ":" + string.Join(':', Enumerable.Range(0, tree.Columns).Select(tree.GetColumnWidth));
+        if (tree.GetMeta("cvpp_layout", "").AsString() == layout) return;
+        tree.SetMeta("cvpp_layout", layout);
+        var font = tree.GetThemeFont("font");
+        foreach (var item in root.GetChildren())
+        {
+            const int column = 2;
+            float width = Math.Max(1, tree.GetColumnWidth(column) - 52);
+            string text = item.GetTooltipText(column);
+            if (text.Contains(" → ") && font.GetStringSize(text, fontSize: 18).X > width) text = text.Replace(" → ", "\n→ ");
+            item.SetText(column, text);
+            int size = 18;
+            while (size > 14 && font.GetMultilineStringSize(text, width: width, fontSize: size,
+                brkFlags: TextServer.LineBreakFlag.Mandatory | TextServer.LineBreakFlag.WordBound).Y > font.GetHeight(size) * 3 + 1) size--;
+            var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            while (size > 1 && words.Any(word => font.GetStringSize(word, fontSize: size).X > width)) size--;
+            item.SetAutowrapMode(column, TextServer.AutowrapMode.Word);
+            item.SetTextOverrunBehavior(column, TextServer.OverrunBehavior.NoTrimming);
+            item.SetCustomFontSize(column, size);
+            item.CustomMinimumHeight = (int)Math.Ceiling(Math.Max(28, font.GetMultilineStringSize(text, width: width, fontSize: size,
+                brkFlags: TextServer.LineBreakFlag.Mandatory | TextServer.LineBreakFlag.WordBound).Y));
+        }
+    }
+
     internal static Button Icon(string path, string tooltip, string name, Action action, bool flip = false)
     {
         var button = new Button
@@ -61,7 +90,7 @@ internal static class Ui
         icon.FlipH = flip;
         button.AddChild(icon);
         icon.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect, margin: 6);
-        button.Pressed += action;
+        button.Pressed += () => { button.GetViewport().GuiGetFocusOwner()?.ReleaseFocus(); action(); };
         return button;
     }
 
@@ -115,13 +144,16 @@ internal static class Ui
             theme.SetStylebox("disabled", type, Surface("23323a", "3c4c53", 6));
             theme.SetStylebox("focus", type, Surface("00000000", "f2d68d", 6));
         }
-        foreach (string type in new[] { "Label", "Button", "Tree", "TooltipLabel" })
+        foreach (string type in new[] { "Label", "Button", "Tree", "TooltipLabel", "LineEdit" })
         {
             theme.SetColor("font_color", type, new Color("eee5cf"));
             theme.SetColor("font_hover_color", type, new Color("fff2cd"));
             theme.SetColor("font_pressed_color", type, Gold);
             theme.SetColor("font_disabled_color", type, Muted);
         }
+        theme.SetStylebox("normal", "LineEdit", Surface("14232b", "526c75", 6));
+        theme.SetStylebox("read_only", "LineEdit", Surface("23323a", "3c4c53", 6));
+        theme.SetStylebox("focus", "LineEdit", Surface("00000000", "f2d68d", 6));
         theme.SetStylebox("panel", "TooltipPanel", Surface("1b2b35", "83918d", 10));
         theme.SetStylebox("separator", "HSeparator", new StyleBoxLine { Color = new Color("405662"), Thickness = 1, ContentMarginTop = 5, ContentMarginBottom = 5 });
         theme.SetStylebox("separator", "VSeparator", new StyleBoxLine { Color = new Color("405662"), Thickness = 1, Vertical = true });

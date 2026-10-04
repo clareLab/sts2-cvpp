@@ -145,13 +145,24 @@ internal static class NativeRegressions
             foreach (uint action in path) await combat.Execute(run, action);
             Require(combat.Finished && combat.Victory == victory && CombatSearch.Score(combat, run) == score
                 && combat.Actions(run).Length == 0, "worker terminal outcome matches reference");
+            var endingRun = run;
+            var exhausted = await HealthSearch.Run(combat, () => ValueTask.FromResult(endingRun), new SolveOptions(0, 16, 8));
+            Require(exhausted.StopReason == "exhausted", "completed tree reports exhaustion with unlimited time");
             terminal.Add(new { victory, score, steps = path.Count });
             combat.Mode = CombatExecution.Reference;
         }
         combat.Mode = CombatExecution.Worker;
         using var stop = new CancellationTokenSource();
-        var baseline = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(3, 256, 96),
-            progress => { if (progress.BestHp.HasValue) stop.Cancel(); }, stop.Token);
+        CombatPlan? preview = null;
+        run = await combat.Restore(original);
+        int startingHp = run.Players[0].Creature.CurrentHp;
+        var baseline = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(0, 256, 96),
+            progress => { if (progress.Plan != null) { preview = progress.Plan; stop.Cancel(); } }, stop.Token);
+        Require(preview != null && baseline.StopReason == "cancelled" && baseline.Plan == preview,
+            "unlimited search streams a verified preview and preserves it on cancellation");
+        Require(preview!.Steps.Sum(step => step.HpDelta) == preview.FinalHp - startingHp, "route HP deltas reconcile to final HP");
+        var bounded = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(0, 1, 8));
+        Require(bounded.StopReason == "node_or_depth_limit", "bounded tree is not reported as exhausted");
         Require(baseline.Plan is { Steps.Length: > 0 }, "cancellation preserves a complete winning baseline");
         var health = await HealthSearch.Run(combat, () => combat.Restore(original), new SolveOptions(3, 256, 96),
             incumbent: baseline.Plan!.Steps.Select(step => step.Action).ToArray());

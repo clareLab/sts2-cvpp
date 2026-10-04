@@ -33,7 +33,21 @@ internal static class ProductTests
         SolverController.Seconds = 5;
         var timing = Stopwatch.StartNew();
         SolverController.Solve();
+        await Until(() => SolverController.Preview != null || !SolverController.Busy, "live preview", 100);
+        if (!SolverController.Busy || SolverController.Preview is not { } preview
+            || preview.Steps.Sum(action => action.HpDelta) != preview.FinalHp - run.Players[0].Creature.CurrentHp)
+            throw new InvalidOperationException("A complete route with HP deltas was not published during search.");
+        if (OS.GetCmdlineArgs().Contains("--cvpp-ui"))
+        {
+            Click("CvppRouteToggle");
+            await Screenshot("searching");
+            if (Tree.Root.FindChild("CvppStep", true, false) is not Button { Disabled: true })
+                throw new InvalidOperationException("Search preview was executable before the search stopped.");
+            SolverHud.Close();
+        }
         await Until(() => !SolverController.Busy, "worker solve", 100);
+        if (SolverController.StopReason != "time_limit" || SolverController.Status != "Time limit")
+            throw new InvalidOperationException("Timed search did not report its stopping reason.");
         var plan = SolverController.Plan ?? throw new InvalidOperationException(SolverController.Error ?? SolverController.Status);
         double firstSolveMs = timing.Elapsed.TotalMilliseconds;
         int worker = SolverController.WorkerPid ?? throw new InvalidOperationException("Worker was not retained during combat.");
@@ -45,9 +59,10 @@ internal static class ProductTests
             Click("CvppRouteToggle");
             await Screenshot("route");
             Click("CvppSettings");
-            Click("CvppBudget30");
+            Click("CvppTime30");
             if (SolverController.Seconds != 30 || Tree.Root.FindChild("CvppRoute", true, false) is not Control { Visible: false })
                 throw new InvalidOperationException("Settings flyout interaction failed.");
+            await HudTests.Run();
             await Screenshot("settings");
             SolverHud.Close();
             RenderingServer.RenderLoopEnabled = false;
@@ -63,7 +78,7 @@ internal static class ProductTests
             throw new InvalidOperationException(SolverController.Error ?? "Turn execution failed.");
         before = CombatFingerprint.Capture(run);
         int previousHp = plan.FinalHp;
-        SolverController.Seconds = 60;
+        SolverController.Seconds = 0;
         timing.Restart();
         SolverController.Solve();
         await Until(() => SolverController.Progress?.BestHp != null || !SolverController.Busy, "warm worker", 30);
